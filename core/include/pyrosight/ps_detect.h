@@ -31,6 +31,7 @@ typedef enum {
     PS_DETECTOR_NONE = 0,
     PS_DETECTOR_CLASSICAL,
     PS_DETECTOR_NEURAL,
+    PS_DETECTOR_REFERENCE,  /* simulation only: ground-truth boxes, for comparison */
 } ps_detector_kind_t;
 
 typedef struct {

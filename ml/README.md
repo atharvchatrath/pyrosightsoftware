@@ -46,6 +46,7 @@ estimate that counts only conv multiply-accumulates. It is not a measured ESP32-
 | `eval.py` | AP@0.5 per class, P/R at 0.35, person distance error, all sliced by smoke; `--samples` writes a PNG |
 | `export_onnx.py` | folds BN, fixed shape, outputs named heat/wh/off, op allow-list check, onnxruntime comparison |
 | `quantize.py` | calibration `.npy`, esp-ppq to `.espdl` (or exact instructions), int8 power-of-two PTQ simulation |
+| `export_nnref.py` | ONNX to `.psnn`, the float format the simulator's reference runtime (`sim/nn_ref.c`) and the browser demo load |
 | `viz.py` | PIL-only rendering |
 | `tests/` | `python3 -m pytest ml/tests -q` |
 
@@ -84,6 +85,7 @@ python3 -m ml.eval --weights ml/runs/synthetic_v0/best.pt --data /tmp/sim_eval
 python3 -m ml.export_onnx --weights ml/runs/synthetic_v0/best.pt --out ml/runs/synthetic_v0/model.onnx
 python3 -m ml.quantize --weights ml/runs/synthetic_v0/best.pt --onnx ml/runs/synthetic_v0/model.onnx \
     --out-dir ml/runs/synthetic_v0
+python3 -m ml.export_nnref --onnx ml/runs/synthetic_v0/model.onnx --out ml/runs/synthetic_v0/model.psnn
 ```
 
 CPU tip: train with `channels_last` (train.py already does this), and keep `--threads` plus

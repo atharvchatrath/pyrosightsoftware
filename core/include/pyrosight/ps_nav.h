@@ -94,6 +94,7 @@ typedef struct {
     float home_dist_m;            /* straight-line distance */
     float pos_sigma_m;
     float confidence;
+    bool exit_is_next;            /* the doorway is the next point on the route */
 } ps_nav_guidance_t;
 
 void ps_nav_init(ps_nav_t *nav);

@@ -160,22 +160,6 @@ static void thick_rect(ps_fb_t *fb, int x, int y, int w, int h, uint16_t c)
     ps_fb_rect(fb, x, y, w, h, 2, c);
 }
 
-/* Corner brackets for people: less clutter over the person's own pixels. */
-static void brackets(ps_fb_t *fb, int x, int y, int w, int h, uint16_t c)
-{
-    int l = (w < h ? w : h) / 3;
-    if (l < 4) l = 4;
-    for (int pass = 0; pass < 2; pass++) {
-        uint16_t col = pass ? c : BLACK;
-        int t = pass ? 2 : 4, o = pass ? 0 : 1;
-        ps_fb_fill_rect(fb, x - o, y - o, l + o, t, col);         ps_fb_fill_rect(fb, x - o, y - o, t, l + o, col);
-        ps_fb_fill_rect(fb, x + w - l, y - o, l + o, t, col);     ps_fb_fill_rect(fb, x + w - t + o, y - o, t, l + o, col);
-        ps_fb_fill_rect(fb, x - o, y + h - t + o, l + o, t, col); ps_fb_fill_rect(fb, x - o, y + h - l, t, l + o, col);
-        ps_fb_fill_rect(fb, x + w - l, y + h - t + o, l + o, t, col);
-        ps_fb_fill_rect(fb, x + w - t + o, y + h - l, t, l + o, col);
-    }
-}
-
 /* ------------------------------------------------------------------- HUD */
 
 static void draw_arrow(ps_fb_t *fb, int cx, int cy, int r, float rel_deg, uint16_t c)
@@ -254,11 +238,51 @@ static void draw_status(ps_fb_t *fb, const ps_hud_t *h)
         ps_fb_text(fb, PS_DISP_W - 4 - ps_fb_text_width(buf, 1), y, buf, 1, h->battery_low ? red : grey, true);
 
     /* Detector source, bottom-left: AI = neural, TH = threshold fallback. */
-    const char *src = h->detector == PS_DETECTOR_NEURAL ? "AI" : h->detector == PS_DETECTOR_CLASSICAL ? "TH" : "--";
+    const char *src = h->detector == PS_DETECTOR_NEURAL ? "AI" : h->detector == PS_DETECTOR_CLASSICAL ? "TH"
+                    : h->detector == PS_DETECTOR_REFERENCE ? "GT" : "--";
     ps_fb_text(fb, 4, y, src, 1, grey, true);
 
     if (!h->imu_ok) ps_fb_text(fb, 24, y, "NO IMU", 1, red, true);
     (void)white;
+}
+
+/* Green box where the device believes the doorway is, if it is in view. */
+static void draw_exit(ps_fb_t *fb, const ps_config_t *cfg, const ps_hud_t *h)
+{
+    if (!h->nav_tracking || !h->nav || !h->nav->valid || !h->nav->exit_is_next) return;
+    if (h->nav_level == PS_NAVCONF_UNRELIABLE) return; /* not trusted: no marker */
+    const ps_nav_guidance_t *g = h->nav;
+    const float half_fov = cfg->hfov_deg * 0.5f;
+    if (g->home_dist_m < 1.0f || fabsf(g->home_bearing_rel_deg) > half_fov + 5.0f) return;
+
+    const float a = g->home_bearing_rel_deg * 3.14159265f / 180.0f;
+    const float f = (PS_THERM_W * 0.5f) / tanf(half_fov * 3.14159265f / 180.0f);
+    float depth = g->home_dist_m * cosf(a);
+    if (depth < 0.5f) depth = 0.5f;
+    float cx = PS_THERM_W * 0.5f - f * tanf(a);
+    float w = f * PS_EXIT_W_M / depth;
+    float top = PS_THERM_H * 0.5f - f * (PS_EXIT_H_M - cfg->camera_height_m) / depth;
+    float bot = PS_THERM_H * 0.5f + f * cfg->camera_height_m / depth;
+    if (w < 4.0f) w = 4.0f;
+    if (bot - top < 8.0f) { float m = (top + bot) * 0.5f; top = m - 4.0f; bot = m + 4.0f; }
+
+    int x = (int)((cx - w * 0.5f) * PS_DISP_SCALE), y = (int)(top * PS_DISP_SCALE);
+    int ww = (int)(w * PS_DISP_SCALE), hh = (int)((bot - top) * PS_DISP_SCALE);
+    thick_rect(fb, x, y, ww, hh, PS_COLOR_EXIT);
+    char buf[16];
+    snprintf(buf, sizeof buf, "EXIT %dM", (int)(g->home_dist_m + 0.5f));
+    /* Label above the box; if that lands on the arrow ring or its distance
+     * readout (top centre), inside the box's top edge, else its bottom edge. */
+    const int lw = ps_fb_text_width(buf, 1);
+    int lx = x + 3 > 2 ? x + 3 : 2;
+    if (lx + lw > PS_DISP_W - 2) lx = PS_DISP_W - 2 - lw;
+    const bool under_ring = lx < PS_DISP_W / 2 + 34 && lx + lw > PS_DISP_W / 2 - 34;
+    int ty = y - 10;
+    if (ty < 2 || (under_ring && ty < 68)) ty = y + 4;
+    if (under_ring && ty < 68) ty = y + hh - 12;
+    if (ty > PS_DISP_H - 22) ty = PS_DISP_H - 22; /* above the status line */
+    if (ty < 68 && under_ring) return;             /* no clear spot: box only */
+    ps_fb_text(fb, lx, ty, buf, 1, PS_COLOR_EXIT, true);
 }
 
 void ps_display_render(ps_fb_t *fb, const ps_display_settings_t *s,
@@ -290,30 +314,33 @@ void ps_display_render(ps_fb_t *fb, const ps_display_settings_t *s,
         }
     }
 
-    /* 2. Detections. */
+    /* 2. Detections: people white, fire purple. */
     if (h->camera_ok && h->dets) {
         char buf[16];
         for (int i = 0; i < h->dets->n; i++) {
             const ps_detection_t *d = &h->dets->d[i];
             int x = (int)(d->x * PS_DISP_SCALE), y = (int)(d->y * PS_DISP_SCALE);
             int w = (int)(d->w * PS_DISP_SCALE), hh = (int)(d->h * PS_DISP_SCALE);
+            int ty = y - 10 < 0 ? y + hh + 2 : y - 10;
             if (d->cls == PS_CLASS_FIRE) {
-                thick_rect(fb, x, y, w, hh, ps_rgb565(255, 40, 0));
+                thick_rect(fb, x, y, w, hh, PS_COLOR_FIRE);
+                ps_fb_text(fb, x, ty, "FIRE", 1, PS_COLOR_FIRE, true);
             } else {
-                uint16_t c = ps_rgb565(0, 230, 255);
-                brackets(fb, x, y, w, hh, c);
+                thick_rect(fb, x, y, w, hh, PS_COLOR_PERSON);
                 if (d->dist_m > 0.0f) {
                     if (d->dist_m < 10.0f) snprintf(buf, sizeof buf, "%s%d.%dM", d->truncated ? "<" : "",
                                                     (int)d->dist_m, (int)(d->dist_m * 10) % 10);
                     else snprintf(buf, sizeof buf, "%s%dM", d->truncated ? "<" : "", (int)(d->dist_m + 0.5f));
-                    int ty = y - 10 < 0 ? y + hh + 2 : y - 10;
-                    ps_fb_text(fb, x, ty, buf, 1, c, true);
+                    ps_fb_text(fb, x, ty, buf, 1, PS_COLOR_PERSON, true);
                 }
             }
         }
     }
 
-    /* 3. Navigation arrow and status. */
+    /* 3. Exit marker. */
+    if (h->camera_ok) draw_exit(fb, cfg, h);
+
+    /* 4. Navigation arrow and status. */
     draw_nav(fb, s, h);
     draw_status(fb, h);
 }

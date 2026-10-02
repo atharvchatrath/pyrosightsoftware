@@ -1,0 +1,631 @@
+<title>PyroSight Simulator</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --fg: #15181d;
+  --muted: #5d6573;
+  --border: #dcdfe5;
+  --accent: #e2552b;
+  --accent-fg: #ffffff;
+  --chip: #eef0f3;
+  --screen: #0a0d12;
+  --screen-line: #222a35;
+  --good: #1d9a50;
+  --warn: #c98500;
+  --bad: #d43d3d;
+  --person: #ffffff;
+  --fire: #c850ff;
+  --exit: #28ff50;
+  --true-path: #ff8a3d;
+  --est-path: #38c6f4;
+  --hose: #e8c547;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1115;
+    --surface: #161a20;
+    --fg: #e7eaef;
+    --muted: #98a1af;
+    --border: #2a313b;
+    --chip: #1f252d;
+    --screen-line: #252d38;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1115;
+  --surface: #161a20;
+  --fg: #e7eaef;
+  --muted: #98a1af;
+  --border: #2a313b;
+  --chip: #1f252d;
+  --screen-line: #252d38;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 32px; }
+header { margin-bottom: 16px; }
+h1 { font-size: 22px; line-height: 1.2; margin: 0 0 4px; letter-spacing: -0.01em; }
+h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: 2px; }
+.sub { margin: 0; color: var(--muted); max-width: 760px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.col { display: grid; gap: 16px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; min-width: 0; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; font-weight: 650; }
+.hint { color: var(--muted); font-size: 13px; }
+.screen { position: relative; background: var(--screen); border-radius: 8px; overflow: hidden; }
+#eye { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; image-rendering: crisp-edges; }
+#map { display: block; width: 100%; height: auto; }
+.overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 8, 12, 0.55); color: #fff; text-align: center; padding: 16px;
+}
+.overlay[hidden] { display: none; }
+.overlay .box { max-width: 420px; }
+.overlay p { margin: 0 0 12px; font-size: 16px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px 5px 6px; border-radius: 999px; background: var(--chip); font-size: 13px; }
+.sw { width: 22px; height: 16px; border-radius: 4px; background: var(--screen); position: relative; flex: none; }
+.sw::after { content: ""; position: absolute; inset: 3px 4px; border: 2px solid currentColor; border-radius: 1px; }
+.sw.person { color: var(--person); } .sw.fire { color: var(--fire); } .sw.exit { color: var(--exit); }
+.ln { width: 22px; height: 0; border-top: 3px solid; flex: none; }
+.ln.true { border-color: var(--true-path); } .ln.est { border-color: var(--est-path); } .ln.hose { border-top-style: dashed; border-color: var(--hose); }
+.controls { display: grid; gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row > label.lbl { font-size: 13px; color: var(--muted); min-width: 74px; }
+button, select {
+  font: inherit; font-size: 14px; color: var(--fg); background: var(--chip); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px;
+}
+button:hover, select:hover { border-color: var(--muted); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; min-width: 96px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex-wrap: wrap; }
+.seg button { border: 0; border-radius: 0; background: transparent; min-height: 34px; padding: 6px 11px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.stat .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bar { height: 6px; border-radius: 3px; background: var(--chip); margin-top: 4px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--good); transition: width 0.2s; }
+.pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }
+.pill.good { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.pill.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.pill.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.result { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--chip); font-size: 14px; }
+.result[hidden] { display: none; }
+ol.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 236px; overflow: auto; }
+ol.log li { display: flex; gap: 10px; font-size: 14px; }
+ol.log time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 38px; }
+ol.log li.empty { color: var(--muted); }
+.foot { margin-top: 16px; color: var(--muted); font-size: 13px; max-width: 860px; }
+.engine { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (max-width: 860px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .stats { grid-template-columns: minmax(0, 1fr); }
+  .row > label.lbl { min-width: 100%; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1><span class="dot"></span>PyroSight simulator</h1>
+    <p class="sub">The PyroSight device software on a simulated search in a smoke-filled building. A firefighter walks in, finds a casualty and a fire, then walks back out following only the arrow in the eyepiece. It is the same code that runs on the ESP32-P4, compiled for your browser.</p>
+  </header>
+
+  <div class="grid">
+    <div class="col">
+      <section class="card" aria-labelledby="eye-h">
+        <div class="card-head">
+          <h2 id="eye-h">Eyepiece view</h2>
+          <span class="engine" id="engine">Loading…</span>
+        </div>
+        <div class="screen">
+          <canvas id="eye" width="320" height="240" aria-label="Simulated eyepiece display"></canvas>
+          <div class="overlay" id="overlay">
+            <div class="box"><p id="overlay-text">Loading the simulator…</p></div>
+          </div>
+        </div>
+        <div class="legend" aria-label="Box colours">
+          <span class="chip"><i class="sw person"></i>Person</span>
+          <span class="chip"><i class="sw fire"></i>Fire</span>
+          <span class="chip"><i class="sw exit"></i>Exit (doorway you came in by)</span>
+        </div>
+      </section>
+
+      <section class="card controls" aria-label="Controls">
+        <div class="row">
+          <button class="primary" id="play" disabled>Pause</button>
+          <button id="restart" disabled>Run again</button>
+          <select id="scenario" aria-label="Scenario"></select>
+        </div>
+        <div class="row">
+          <label class="lbl">Speed</label>
+          <div class="seg" id="speed" role="group" aria-label="Speed">
+            <button data-v="1">1×</button><button data-v="2" aria-pressed="true">2×</button><button data-v="4">4×</button><button data-v="8">8×</button>
+          </div>
+        </div>
+        <div class="row">
+          <label class="lbl">Detector</label>
+          <div class="seg" id="detector" role="group" aria-label="Detector">
+            <button data-v="0" aria-pressed="true">AI model</button><button data-v="1">Heat threshold</button><button data-v="2">Perfect</button>
+          </div>
+        </div>
+        <div class="hint" id="det-hint"></div>
+        <div class="row">
+          <label class="lbl" for="smoke">Smoke</label>
+          <input type="range" id="smoke" min="0" max="1" step="0.05" value="0.5">
+          <span class="engine" id="smoke-v">50%</span>
+        </div>
+        <div class="row">
+          <button id="whereout" disabled>Ask “where’s the way out?”</button>
+          <button id="palette" disabled>Change colours</button>
+          <button id="voice" aria-pressed="false">Voice: off</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card" aria-labelledby="map-h">
+        <div class="card-head">
+          <h2 id="map-h">Floor plan</h2>
+          <span class="hint">What really happened, and what the device believes</span>
+        </div>
+        <div class="screen"><canvas id="map" aria-label="Floor plan with the firefighter's true and estimated path"></canvas></div>
+        <div class="legend">
+          <span class="chip"><i class="ln true"></i>Real path</span>
+          <span class="chip"><i class="ln est"></i>Device’s estimate</span>
+          <span class="chip"><i class="ln hose"></i>Hose line</span>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="st-h">
+        <div class="card-head"><h2 id="st-h">Status</h2><span class="engine" id="clock">0:00</span></div>
+        <div class="stats">
+          <div class="stat"><div class="k">Firefighter</div><div class="v" id="s-phase">–</div></div>
+          <div class="stat"><div class="k">In view now</div><div class="v" id="s-seen">–</div></div>
+          <div class="stat">
+            <div class="k">Navigation confidence</div>
+            <div class="v"><span id="s-conf">–</span><span class="pill good" id="s-level">Good</span></div>
+            <div class="bar"><i id="s-confbar"></i></div>
+          </div>
+          <div class="stat"><div class="k">Device’s position error</div><div class="v" id="s-err">–</div></div>
+          <div class="stat"><div class="k">Way out (device)</div><div class="v" id="s-route">–</div></div>
+          <div class="stat"><div class="k">Sensors</div><div class="v" id="s-sensors">–</div></div>
+        </div>
+        <p class="result" id="result" hidden></p>
+      </section>
+
+      <section class="card" aria-labelledby="al-h">
+        <div class="card-head"><h2 id="al-h">Spoken alerts</h2><span class="hint">What the earpiece says</span></div>
+        <ol class="log" id="log"><li class="empty">Nothing yet.</li></ol>
+      </section>
+    </div>
+  </div>
+
+  <p class="foot">Simulation only. The building, the smoke and the motion sensor are simulated. The AI model was trained on synthetic thermal images and has never seen a real fire, so treat its boxes as a demonstration of the pipeline, not of real-world accuracy. The green exit box is drawn where the device believes the doorway is, and only while its navigation estimate is trusted and the doorway is the next point on the way out.</p>
+</div>
+
+<script type="application/octet-stream" id="wasm-simd">@@WASM_SIMD@@</script>
+<script type="application/octet-stream" id="wasm-base">@@WASM_BASE@@</script>
+<script type="application/octet-stream" id="model-psnn">@@MODEL@@</script>
+<script>
+window.PyroSightJS = function () {
+@@JS_FALLBACK@@
+return retasmFunc;
+};
+</script>
+<script>
+(function () {
+  "use strict";
+  // Layout of api_state() (sim/web/wasm_api.c).
+  var S = { T: 0, TX: 1, TY: 2, TYAW: 3, EX: 4, EY: 5, EYAW: 6, PHASE: 7, CONF: 8, LEVEL: 9, SIGMA: 10,
+    HOSE: 11, EXITED: 12, DONE: 13, CAM: 14, IMU: 15, NCRUMB: 16, TARGET: 17, GVALID: 18, ROUTE: 19,
+    HOME: 20, BEARING: 21, NP: 22, NF: 23, FRAME: 24, WALKED: 25, STEPS: 26, ERR: 27, EXITNEXT: 28,
+    SRC: 29, SMOKE: 30, PAL: 31, NGT: 32 };
+  var SCENARIOS = {
+    corridor: { label: "Search and return", smoke: 0.5 },
+    long: { label: "Long search (sensor drift builds up)", smoke: 0.6 },
+    crawl: { label: "Crawling in heavy smoke", smoke: 0.8 },
+    dropout: { label: "Camera and motion sensor failures", smoke: 0.5 }
+  };
+  var DET_HINT = [
+    "AI model: the trained detector network (trained on synthetic images only).",
+    "Heat threshold: simple temperature rules, the device’s fallback when no model is loaded. It misses people often.",
+    "Perfect: the simulator’s true boxes, to show what an ideal detector would draw."
+  ];
+  var FRAME_S = 0.115;
+  var $ = function (id) { return document.getElementById(id); };
+
+  var ex = null, engineKind = "", seed = 1, scenarioIdx = 0, speed = 2, detector = 0;
+  var running = false, finished = false, budget = 0, lastTs = null;
+  var trueTrail = [], estTrail = [], geom = null, inbound = [], alerts = [];
+  var frameCostMs = 0, simSecWindow = [], voiceOn = false;
+  var eyeCtx = $("eye").getContext("2d"), eyeImg = eyeCtx.createImageData(320, 240);
+  var td = new TextDecoder();
+
+  function b64(id) {
+    var s = $(id).textContent.trim(), bin = atob(s), n = bin.length, u = new Uint8Array(n);
+    for (var i = 0; i < n; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  }
+  function f32(ptr, n) { return new Float32Array(ex.memory.buffer, ptr, n); }
+  function cstr(ptr) {
+    var u = new Uint8Array(ex.memory.buffer, ptr, 256), end = u.indexOf(0);
+    return td.decode(u.slice(0, end < 0 ? 256 : end));
+  }
+
+  async function loadEngine() {
+    if (typeof WebAssembly === "object") {
+      var ids = ["wasm-simd", "wasm-base"];
+      for (var i = 0; i < ids.length; i++) {
+        try {
+          var r = await WebAssembly.instantiate(b64(ids[i]), {});
+          engineKind = "WebAssembly";
+          return r.instance.exports;
+        } catch (e) { /* try the next build */ }
+      }
+    }
+    engineKind = "JavaScript";
+    return window.PyroSightJS();
+  }
+
+  function setOverlay(text) {
+    if (text) { $("overlay-text").textContent = text; $("overlay").hidden = false; }
+    else $("overlay").hidden = true;
+  }
+
+  function restart() {
+    ex.api_init(scenarioIdx, seed, parseFloat($("smoke").value), 1);
+    ex.api_set_detector(detector);
+    trueTrail = []; estTrail = []; alerts = []; budget = 0; finished = false;
+    var n = ex.api_n_inbound(), p = f32(ex.api_inbound(), 2 * n);
+    inbound = [[0.3, 0]];
+    for (var i = 0; i < n; i++) inbound.push([p[2 * i], p[2 * i + 1]]);
+    $("result").hidden = true;
+    renderLog();
+    step(); // first frame, so the eyepiece is not blank
+    draw();
+    setRunning(true);
+  }
+
+  function setRunning(on) {
+    running = on && !finished;
+    $("play").textContent = running ? "Pause" : (finished ? "Finished" : "Play");
+    $("play").disabled = finished;
+    setOverlay(running || finished ? "" : "Paused");
+    lastTs = null;
+  }
+
+  function step() {
+    var t0 = performance.now();
+    var r = ex.api_run_frame();
+    var dt = performance.now() - t0;
+    frameCostMs = frameCostMs ? frameCostMs * 0.9 + dt * 0.1 : dt;
+    var st = f32(ex.api_state(), 33);
+    var tx = st[S.TX], ty = st[S.TY], exx = st[S.EX], ey = st[S.EY];
+    pushTrail(trueTrail, tx, ty);
+    pushTrail(estTrail, exx, ey);
+    for (;;) {
+      var a = cstr(ex.api_next_alert());
+      if (!a) break;
+      addAlert(st[S.T], a);
+    }
+    if (r === 2) finish();
+    return r;
+  }
+
+  function pushTrail(arr, x, y) {
+    var l = arr[arr.length - 1];
+    if (!l || Math.hypot(l[0] - x, l[1] - y) > 0.08) arr.push([x, y]);
+  }
+
+  function addAlert(t, text) {
+    alerts.unshift([t, text]);
+    if (alerts.length > 40) alerts.pop();
+    renderLog();
+    if (voiceOn && "speechSynthesis" in window) {
+      try {
+        if (speechSynthesis.pending) speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.05;
+        speechSynthesis.speak(u);
+      } catch (e) { /* speech unavailable */ }
+    }
+  }
+
+  function fmtTime(t) { var s = Math.floor(t); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+
+  function renderLog() {
+    var ol = $("log");
+    ol.textContent = "";
+    if (!alerts.length) {
+      var li0 = document.createElement("li"); li0.className = "empty"; li0.textContent = "Nothing yet."; ol.appendChild(li0);
+      return;
+    }
+    alerts.slice(0, 12).forEach(function (a) {
+      var li = document.createElement("li"), tm = document.createElement("time"), sp = document.createElement("span");
+      tm.textContent = fmtTime(a[0]); sp.textContent = a[1];
+      li.appendChild(tm); li.appendChild(sp); ol.appendChild(li);
+    });
+  }
+
+  function finish() {
+    finished = true;
+    var st = f32(ex.api_state(), 33);
+    var t = Math.round(st[S.T]);
+    var dx = Math.max(0, st[S.TX]), dy = Math.max(0, Math.abs(st[S.TY]) - 1);
+    var doorDist = Math.hypot(dx, dy);
+    var msg;
+    if (st[S.EXITED] && st[S.HOSE]) msg = "Navigation became unreliable, so the device said “follow the hose line out”, and the firefighter walked out along the hose after " + t + " s. That is the designed fallback.";
+    else if (st[S.EXITED]) msg = "The firefighter walked out through the door after " + t + " s.";
+    else msg = "The arrow alone led the firefighter back to within " + doorDist.toFixed(1) + " m of the doorway, where the eyepiece showed EXIT, after " + t + " s.";
+    $("result").textContent = msg;
+    $("result").hidden = false;
+    setRunning(false);
+  }
+
+  function tick(ts) {
+    if (running && ex) {
+      var dt = lastTs == null ? 0 : Math.min(0.25, (ts - lastTs) / 1000);
+      budget += dt * speed;
+      var t0 = performance.now(), frames = 0;
+      while (budget >= FRAME_S && !finished) {
+        step();
+        frames++;
+        budget -= FRAME_S;
+        if (performance.now() - t0 > 35) break;
+      }
+      if (budget > 0.5) budget = 0.5; // cannot keep up: run as fast as possible instead
+      simSecWindow.push([ts, frames * FRAME_S]);
+      while (simSecWindow.length && ts - simSecWindow[0][0] > 2000) simSecWindow.shift();
+      if (frames) draw();
+      updateEngineLabel(ts);
+    }
+    lastTs = ts;
+    requestAnimationFrame(tick);
+  }
+
+  function updateEngineLabel(ts) {
+    var sim = 0;
+    for (var i = 0; i < simSecWindow.length; i++) sim += simSecWindow[i][1];
+    var span = simSecWindow.length > 1 ? (ts - simSecWindow[0][0]) / 1000 : 0;
+    var actual = span > 0.5 ? sim / span : speed;
+    var txt = (engineKind === "JavaScript" ? "JavaScript (slower)" : engineKind) + " · " + frameCostMs.toFixed(0) + " ms per frame";
+    if (running && actual < speed * 0.85) txt += " · actual speed " + actual.toFixed(1) + "×";
+    $("engine").textContent = txt;
+  }
+
+  // ------------------------------------------------------------- drawing
+  function draw() {
+    var p = ex.api_rgba();
+    eyeImg.data.set(new Uint8Array(ex.memory.buffer, p, 320 * 240 * 4));
+    eyeCtx.putImageData(eyeImg, 0, 0);
+    drawMap();
+    updateStatus();
+  }
+
+  var XMIN = -2.2, XMAX = 20.2, YMIN = -2.2, YMAX = 21;
+  function drawMap() {
+    var cv = $("map"), dpr = window.devicePixelRatio || 1;
+    var cssW = cv.clientWidth || 400, cssH = cssW * (YMAX - YMIN) / (XMAX - XMIN);
+    if (cv.width !== Math.round(cssW * dpr)) { cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr); cv.style.height = cssH + "px"; }
+    var g = cv.getContext("2d"), s = cv.width / (XMAX - XMIN);
+    var X = function (x) { return (x - XMIN) * s; }, Y = function (y) { return (YMAX - y) * s; };
+    var css = getComputedStyle(document.documentElement);
+    var col = function (n) { return css.getPropertyValue(n).trim(); };
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.fillStyle = col("--screen"); g.fillRect(0, 0, cv.width, cv.height);
+    g.lineCap = "round"; g.lineJoin = "round";
+    var u = s / 10; // ~1 px per 10 cm at 400 px
+
+    // floor tint
+    g.fillStyle = "#121821";
+    g.fillRect(X(0), Y(1), (15 - 0) * s, 2 * s);
+    g.fillRect(X(13), Y(12), 2 * s, 13 * s);
+    g.fillRect(X(9), Y(20), 10 * s, 8 * s);
+
+    // walls
+    var nw = ex.api_n_walls(), no = ex.api_n_objs(), gm = f32(ex.api_geometry(), 4 * nw + 4 * no);
+    g.strokeStyle = "#8a96a8"; g.lineWidth = Math.max(2, 2.2 * u);
+    g.beginPath();
+    for (var i = 0; i < nw; i++) { g.moveTo(X(gm[4 * i]), Y(gm[4 * i + 1])); g.lineTo(X(gm[4 * i + 2]), Y(gm[4 * i + 3])); }
+    g.stroke();
+
+    var fontPx = Math.max(10, Math.round(5.2 * u));
+    g.font = "600 " + fontPx + "px system-ui, sans-serif";
+    g.textBaseline = "middle";
+
+    // the doorway = the exit
+    g.strokeStyle = col("--exit"); g.lineWidth = Math.max(2, 1.8 * u);
+    g.strokeRect(X(-0.5), Y(1), 0.5 * s, 2 * s);
+    g.fillStyle = col("--exit"); g.textAlign = "center";
+    g.fillText("EXIT", X(-0.25), Y(1.9));
+
+    // hose line (the inbound route)
+    g.setLineDash([1.2 * s * 0.4, 0.8 * s * 0.4]);
+    g.strokeStyle = col("--hose"); g.globalAlpha = 0.75; g.lineWidth = Math.max(1.5, 1.2 * u);
+    g.beginPath(); g.moveTo(X(-0.5), Y(0));
+    inbound.forEach(function (q) { g.lineTo(X(q[0]), Y(q[1])); });
+    g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+
+    // objects
+    for (var k = 0; k < no; k++) {
+      var o = 4 * nw + 4 * k, kind = gm[o], ox = gm[o + 1], oy = gm[o + 2];
+      if (kind === 0) { // fire
+        var gr = g.createRadialGradient(X(ox), Y(oy), 0, X(ox), Y(oy), 1.4 * s);
+        gr.addColorStop(0, "rgba(200,80,255,0.55)"); gr.addColorStop(1, "rgba(200,80,255,0)");
+        g.fillStyle = gr; g.beginPath(); g.arc(X(ox), Y(oy), 1.4 * s, 0, 7); g.fill();
+        g.strokeStyle = col("--fire"); g.lineWidth = Math.max(2, 1.6 * u);
+        g.strokeRect(X(ox - 0.55), Y(oy + 0.55), 1.1 * s, 1.1 * s);
+        g.fillStyle = col("--fire"); g.textAlign = "right"; g.fillText("Fire", X(ox - 0.8), Y(oy));
+      } else if (kind === 1 || kind === 2) { // people
+        g.fillStyle = col("--person");
+        g.beginPath(); g.arc(X(ox), Y(oy), 0.28 * s, 0, 7); g.fill();
+        g.strokeStyle = col("--person"); g.lineWidth = Math.max(1.5, 1.2 * u);
+        g.strokeRect(X(ox - 0.55), Y(oy + 0.55), 1.1 * s, 1.1 * s);
+        g.textAlign = "left";
+        g.fillText(kind === 2 ? "Casualty" : "Crew member", X(ox + 0.75), Y(oy));
+      } else { // hot pipe on the wall: a decoy that is hot but not a fire
+        g.strokeStyle = "#ffb35c"; g.lineWidth = Math.max(2, 2 * u);
+        g.beginPath(); g.moveTo(X(ox), Y(oy - 1)); g.lineTo(X(ox), Y(oy + 1)); g.stroke();
+        g.fillStyle = "#c9a37a"; g.textAlign = "right"; g.font = "500 " + Math.round(fontPx * 0.9) + "px system-ui, sans-serif";
+        g.fillText("Hot pipe", X(ox - 0.4), Y(oy));
+        g.font = "600 " + fontPx + "px system-ui, sans-serif";
+      }
+    }
+
+    var st = f32(ex.api_state(), 33);
+
+    // camera view cone
+    var tx = st[S.TX], ty = st[S.TY], yaw = st[S.TYAW], half = 28.5 * Math.PI / 180, R = 6;
+    var cone = g.createRadialGradient(X(tx), Y(ty), 0, X(tx), Y(ty), R * s);
+    cone.addColorStop(0, "rgba(255,138,61,0.28)"); cone.addColorStop(1, "rgba(255,138,61,0)");
+    g.fillStyle = cone; g.beginPath(); g.moveTo(X(tx), Y(ty));
+    g.arc(X(tx), Y(ty), R * s, -(yaw + half), -(yaw - half)); g.closePath(); g.fill();
+
+    // paths
+    function path(arr, color, w) {
+      if (arr.length < 2) return;
+      g.strokeStyle = color; g.lineWidth = w; g.beginPath(); g.moveTo(X(arr[0][0]), Y(arr[0][1]));
+      for (var j = 1; j < arr.length; j++) g.lineTo(X(arr[j][0]), Y(arr[j][1]));
+      g.stroke();
+    }
+    path(trueTrail, col("--true-path"), Math.max(2, 1.6 * u));
+    g.globalAlpha = 0.9; path(estTrail, col("--est-path"), Math.max(1.5, 1.2 * u)); g.globalAlpha = 1;
+
+    // breadcrumbs: the route the device will lead back along
+    var nc = st[S.NCRUMB] | 0, tgt = st[S.TARGET] | 0, cr = f32(ex.api_crumbs(), 2 * nc);
+    for (var c = 0; c < nc; c++) {
+      g.fillStyle = col("--est-path");
+      g.beginPath(); g.arc(X(cr[2 * c]), Y(cr[2 * c + 1]), Math.max(2, 1.5 * u), 0, 7); g.fill();
+    }
+    if (st[S.PHASE] === 2 && st[S.GVALID] && tgt < nc) {
+      g.strokeStyle = col("--est-path"); g.lineWidth = Math.max(1.5, u);
+      g.beginPath(); g.arc(X(cr[2 * tgt]), Y(cr[2 * tgt + 1]), Math.max(6, 4.5 * u), 0, 7); g.stroke();
+    }
+
+    // device estimate with its 1-sigma circle
+    var exx = st[S.EX], ey = st[S.EY], sg = Math.max(0.15, st[S.SIGMA]);
+    g.fillStyle = "rgba(56,198,244,0.12)"; g.strokeStyle = "rgba(56,198,244,0.6)"; g.lineWidth = 1;
+    g.beginPath(); g.arc(X(exx), Y(ey), sg * s, 0, 7); g.fill(); g.stroke();
+    g.fillStyle = col("--est-path"); g.beginPath(); g.arc(X(exx), Y(ey), Math.max(3, 2.4 * u), 0, 7); g.fill();
+
+    // the firefighter (true position) with heading
+    g.fillStyle = col("--true-path"); g.strokeStyle = "#000"; g.lineWidth = 1.5;
+    var hx = Math.cos(yaw), hy = Math.sin(yaw), r0 = Math.max(5, 3.6 * u);
+    g.beginPath();
+    g.moveTo(X(tx) + hx * r0 * 1.7, Y(ty) - hy * r0 * 1.7);
+    g.lineTo(X(tx) - hy * r0 - hx * r0 * 0.6, Y(ty) - hx * r0 + hy * r0 * 0.6);
+    g.lineTo(X(tx) + hy * r0 - hx * r0 * 0.6, Y(ty) + hx * r0 + hy * r0 * 0.6);
+    g.closePath(); g.fill(); g.stroke();
+  }
+
+  function updateStatus() {
+    var st = f32(ex.api_state(), 33);
+    $("clock").textContent = fmtTime(st[S.T]);
+    var ph;
+    if (st[S.DONE]) ph = st[S.EXITED] ? "Out of the building" : "At the exit";
+    else if (st[S.PHASE] === 0) ph = "Searching";
+    else if (st[S.PHASE] === 1) ph = "Sweeping the room";
+    else ph = st[S.HOSE] ? "Following the hose out" : "Following the arrow out";
+    $("s-phase").textContent = ph;
+    var np = st[S.NP] | 0, nf = st[S.NF] | 0;
+    $("s-seen").textContent = np || nf ? [np ? np + (np > 1 ? " people" : " person") : "", nf ? nf + (nf > 1 ? " fires" : " fire") : ""].filter(Boolean).join(", ") : "Nothing";
+    var conf = st[S.CONF], lvl = st[S.LEVEL] | 0;
+    $("s-conf").textContent = Math.round(conf * 100) + "%";
+    var lv = $("s-level");
+    lv.textContent = ["Good", "Degraded", "Unreliable"][lvl];
+    lv.className = "pill " + ["good", "warn", "bad"][lvl];
+    var bar = $("s-confbar");
+    bar.style.width = Math.round(conf * 100) + "%";
+    bar.style.background = ["var(--good)", "var(--warn)", "var(--bad)"][lvl];
+    $("s-err").textContent = st[S.ERR].toFixed(1) + " m";
+    $("s-route").textContent = st[S.GVALID] ? st[S.ROUTE].toFixed(1) + " m to the door" : "–";
+    var cam = st[S.CAM] ? "Camera OK" : "Camera lost", imu = st[S.IMU] ? "motion OK" : "motion lost";
+    $("s-sensors").textContent = cam + ", " + imu;
+    $("s-sensors").style.color = st[S.CAM] && st[S.IMU] ? "" : "var(--bad)";
+  }
+
+  // ------------------------------------------------------------- controls
+  function segment(id, onPick) {
+    var el = $(id);
+    el.addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      el.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
+      onPick(parseFloat(b.dataset.v));
+    });
+  }
+  segment("speed", function (v) { speed = v; simSecWindow = []; });
+  segment("detector", function (v) {
+    detector = v; $("det-hint").textContent = DET_HINT[v];
+    if (ex) ex.api_set_detector(v);
+  });
+  $("det-hint").textContent = DET_HINT[0];
+  $("smoke").addEventListener("input", function () {
+    var v = parseFloat(this.value);
+    $("smoke-v").textContent = Math.round(v * 100) + "%";
+    if (ex) ex.api_set_smoke(v);
+  });
+  $("play").addEventListener("click", function () { setRunning(!running); });
+  $("restart").addEventListener("click", function () { seed++; restart(); });
+  $("scenario").addEventListener("change", function () {
+    scenarioIdx = parseInt(this.value, 10);
+    var sc = SCENARIOS[cstr(ex.api_scenario_name(scenarioIdx))];
+    if (sc) { $("smoke").value = sc.smoke; $("smoke-v").textContent = Math.round(sc.smoke * 100) + "%"; }
+    restart();
+  });
+  $("whereout").addEventListener("click", function () { ex.api_button(1); var st = f32(ex.api_state(), 33); for (;;) { var a = cstr(ex.api_next_alert()); if (!a) break; addAlert(st[S.T], a); } });
+  $("palette").addEventListener("click", function () { ex.api_button(2); ex.api_render(); draw(); });
+  $("voice").addEventListener("click", function () {
+    voiceOn = !voiceOn;
+    this.textContent = voiceOn ? "Voice: on" : "Voice: off";
+    this.setAttribute("aria-pressed", voiceOn ? "true" : "false");
+    if (!voiceOn && "speechSynthesis" in window) speechSynthesis.cancel();
+    if (voiceOn && !("speechSynthesis" in window)) this.textContent = "Voice not supported here";
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.code === "Space" && e.target === document.body && ex && !finished) { e.preventDefault(); setRunning(!running); }
+  });
+
+  // ------------------------------------------------------------- start
+  (async function () {
+    try {
+      ex = await loadEngine();
+      if (ex._initialize) ex._initialize();
+      var blob = b64("model-psnn");
+      var bp = ex.api_model_alloc(blob.length);
+      new Uint8Array(ex.memory.buffer, bp, blob.length).set(blob);
+      if (!ex.api_model_load(blob.length)) throw new Error("model failed to load");
+      var sel = $("scenario");
+      for (var i = 0; i < ex.api_n_scenarios(); i++) {
+        var name = cstr(ex.api_scenario_name(i)), opt = document.createElement("option");
+        opt.value = i; opt.textContent = (SCENARIOS[name] || { label: name }).label;
+        sel.appendChild(opt);
+      }
+      ["play", "restart", "whereout", "palette"].forEach(function (id) { $(id).disabled = false; });
+      $("engine").textContent = engineKind;
+      setOverlay("");
+      restart();
+      requestAnimationFrame(tick);
+    } catch (e) {
+      setOverlay("The simulator could not start in this browser: " + (e && e.message ? e.message : e));
+    }
+  })();
+})();
+</script>

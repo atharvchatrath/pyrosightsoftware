@@ -36,6 +36,7 @@ typedef struct {
     /* ---- Distance estimation ---- */
     float hfov_deg;         /* Lepton 3.5: 57 degrees horizontal */
     float person_height_m;  /* prior for the long axis of a person's box */
+    float camera_height_m;  /* eyepiece camera above the floor (exit marker) */
 
     /* ---- Navigation ---- */
     float step_length_m;        /* calibrated per user (tools/calibrate_steps.py) */

@@ -21,6 +21,7 @@ void ps_config_default(ps_config_t *c)
 
     c->hfov_deg = 57.0f;
     c->person_height_m = 1.7f;
+    c->camera_height_m = 1.5f;
 
     c->step_length_m = 0.62f;          /* shorter than normal gait: heavy gear */
     c->turn_threshold_deg = 50.0f;

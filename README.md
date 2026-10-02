@@ -14,7 +14,7 @@ jack. Standalone: no WiFi, no Bluetooth, no internet.
 | `core/` | All algorithms in portable C99: thermal pipeline, detection helpers, distance, navigation, alerts, display compositor, power policy, system integration | Done; 5 unit-test suites pass |
 | `firmware/` | ESP-IDF project for the ESP32-P4: Lepton VoSPI + CCI, BNO085 SH-2, ESP-DL detector, MIPI-DSI micro-OLED, ES8311 audio, buttons, battery | Written; protocol code passes 6 host test suites. **Not yet compiled against ESP-IDF or run on hardware** (see firmware/README.md "Known gaps") |
 | `ml/` | Synthetic thermal data, CenterNet-style detector, training, smoke-sliced evaluation, ONNX export, ESP-DL int8 `.espdl` export | Runs end to end; 110 tests pass. **Weights are trained on synthetic data only** |
-| `sim/` | Host simulator: ray-cast smoke-filled building, simulated BNO085, a simulated firefighter who searches and then walks out following only the arrow | Done |
+| `sim/` | Host simulator: ray-cast smoke-filled building, simulated BNO085, a simulated firefighter who searches and then walks out following only the arrow. `sim/web/` builds the same code into one HTML page that runs in a browser | Done |
 | `tools/` | Step/turn calibration per wearer, audio clip generator, partition flashing | Done |
 | `docs/` | `ARCHITECTURE.md`, `TEST_PLAN.md` | |
 
@@ -29,6 +29,16 @@ python3 sim/render_report.py run/                    # run/eyepiece.gif, run/tra
 python3 sim/monte_carlo.py --seeds 20                # navigation bench, all scenarios
 python3 -m pytest ml/tests -q                        # ML pipeline tests (needs torch)
 ```
+
+### In a browser
+
+`sim/web/dist/pyrosight_sim.html` is the whole simulator (core, simulated
+world and the trained detector) in one file: open it in any browser, no
+install, works offline. It shows the eyepiece (people in white boxes, fire in
+purple, the exit in green), a floor plan with the real and estimated paths,
+the spoken alerts, and lets you change scenario, speed, smoke and detector
+while it runs. Rebuild it with `python3 sim/web/build_web.py` (needs
+`python3 -m pip install ziglang` and `npm install binaryen`).
 
 ## How each design step is covered
 

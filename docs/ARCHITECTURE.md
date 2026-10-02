@@ -74,9 +74,18 @@ immediately.
 320x240 RGB565 composed by the core, scaled 3x by the ESP32-P4 PPA. White-hot,
 iron and night (amber) palettes. Every HUD element has a black halo so it reads
 against both a white-hot ceiling and black floor. Pixels above the fire
-threshold are drawn solid orange. People get corner brackets with a distance
-label (`<` prefix when the person is cut off by the frame edge, meaning the
-real distance is smaller).
+threshold are drawn solid orange. Box colours have one meaning each:
+
+* **white box**: a person, with a distance label (`<` prefix when the person
+  is cut off by the frame edge, meaning the real distance is smaller);
+* **purple box**: fire, labelled FIRE;
+* **green box**: the exit. Drawn where the device believes the doorway is,
+  sized for a 0.9 x 2.0 m door at the dead-reckoned distance, and only when
+  the doorway is the next point on the way out (so it never points through a
+  wall the route goes around) and navigation is not UNRELIABLE.
+
+Colours are `PS_COLOR_PERSON`, `PS_COLOR_FIRE`, `PS_COLOR_EXIT` in
+`ps_display.h`.
 
 ## Memory (ESP32-P4)
 

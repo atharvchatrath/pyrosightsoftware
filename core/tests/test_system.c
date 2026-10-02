@@ -51,7 +51,8 @@ static void test_pipeline(void)
 
     ps_system_render(&sys, &fb, t);
     CHECK(count_color(ps_rgb565(255, 90, 0)) > 1000);   /* fire overlay */
-    CHECK(count_color(ps_rgb565(0, 230, 255)) > 50);    /* person brackets */
+    CHECK(count_color(PS_COLOR_PERSON) > 50);            /* person box (white) */
+    CHECK(count_color(PS_COLOR_FIRE) > 50);              /* fire box (purple) */
     CHECK(count_color(ps_rgb565(40, 255, 80)) > 30);    /* green nav ring/arrow */
 
     ps_alert_t a;

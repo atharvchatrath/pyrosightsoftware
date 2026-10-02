@@ -11,6 +11,11 @@
  *   - NIGHT palette is amber monochrome at reduced luminance to protect dark
  *     adaptation (the eye is millimetres from an OLED);
  *   - brightness is a separate panel setting (ps_display_settings_t).
+ *
+ * Boxes: people white, fire purple, the exit green. The exit box is drawn
+ * where the device believes the doorway is, only when the door is the next
+ * point on the way out (so it never points through a wall it already knows
+ * about) and the navigation estimate is still trusted.
  */
 #ifndef PS_DISPLAY_H
 #define PS_DISPLAY_H
@@ -32,6 +37,17 @@ extern "C" {
 typedef struct {
     uint16_t px[PS_DISP_W * PS_DISP_H]; /* RGB565, row-major */
 } ps_fb_t;
+
+#define PS_RGB565(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
+
+/* Box colours: one meaning per colour, consistent everywhere. */
+#define PS_COLOR_PERSON PS_RGB565(255, 255, 255) /* white  */
+#define PS_COLOR_FIRE   PS_RGB565(200, 80, 255)  /* purple */
+#define PS_COLOR_EXIT   PS_RGB565(40, 255, 80)   /* green  */
+
+/* Physical size used to draw the exit marker in the camera view. */
+#define PS_EXIT_W_M 0.9f
+#define PS_EXIT_H_M 2.0f
 
 typedef enum {
     PS_PALETTE_WHITE_HOT = 0,

@@ -153,7 +153,7 @@ void ps_alerts_update_detections(ps_alerts_t *a, const ps_config_t *cfg,
     /* Spoken person call-outs only from the neural detector: the threshold
      * fallback is too easily fooled by warm surfaces to justify interrupting
      * the wearer. Its boxes are still drawn. */
-    if (dets->source != PS_DETECTOR_NEURAL) return;
+    if (dets->source == PS_DETECTOR_CLASSICAL || dets->source == PS_DETECTOR_NONE) return;
     const ps_detection_t *best = NULL;
     for (int i = 0; i < dets->n; i++)
         if (dets->d[i].cls == PS_CLASS_PERSON && dets->d[i].score >= 0.5f &&

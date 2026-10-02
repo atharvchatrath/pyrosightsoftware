@@ -276,6 +276,7 @@ void ps_nav_guidance(const ps_nav_t *nav, ps_nav_guidance_t *g)
     float d = dist2(nav->pos, tgt);
     for (int i = nav->return_target; i > 0; i--) d += dist2(nav->crumbs[i].p, nav->crumbs[i - 1].p);
     g->route_dist_m = d;
+    g->exit_is_next = nav->return_target == 0;
 
     g->pos_sigma_m = nav->pos_sigma_m;
     g->confidence = nav->confidence;
