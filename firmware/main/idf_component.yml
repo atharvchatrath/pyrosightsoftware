@@ -1,0 +1,10 @@
+## PyroSight firmware dependencies (ESP-IDF component manager).
+dependencies:
+  idf: ">=5.3"
+  # Neural detector runtime (also declared by components/detector).
+  espressif/esp-dl: "^3.1.0"
+  # ES8311 codec driver, used through esp_codec_dev (also declared by
+  # components/audio). The standalone espressif/es8311 component uses the
+  # legacy I2C driver, which cannot coexist with the new i2c_master driver
+  # used by the Lepton and BNO085 drivers, hence esp_codec_dev.
+  espressif/esp_codec_dev: "^1.3.0"

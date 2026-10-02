@@ -1,0 +1,56 @@
+{
+ "ops": [
+  "Add",
+  "Constant",
+  "Conv",
+  "Relu",
+  "Resize",
+  "Sigmoid"
+ ],
+ "disallowed_ops": [],
+ "inputs": [
+  [
+   "input",
+   [
+    1,
+    1,
+    120,
+    160
+   ]
+  ]
+ ],
+ "outputs": [
+  [
+   "heat",
+   [
+    1,
+    2,
+    30,
+    40
+   ]
+  ],
+  [
+   "wh",
+   [
+    1,
+    2,
+    30,
+    40
+   ]
+  ],
+  [
+   "off",
+   [
+    1,
+    2,
+    30,
+    40
+   ]
+  ]
+ ],
+ "fold_max_abs_diff": 9.1552734375e-05,
+ "onnxruntime_max_abs_diff": 3.0517578125e-05,
+ "conv_macs": 54835200,
+ "elementwise_ops": 43200,
+ "params": 286062
+}

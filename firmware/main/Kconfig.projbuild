@@ -1,0 +1,190 @@
+menu "PyroSight"
+
+    comment "Pin defaults: ESP32-P4-Function-EV-Board (v1.4/1.5) + sensors on the 2x20 header. Verify against your board."
+
+    menu "Thermal camera (FLIR Lepton 3.5)"
+        config PS_LEPTON_SPI_SCLK
+            int "VoSPI SCLK GPIO"
+            default 20
+        config PS_LEPTON_SPI_MISO
+            int "VoSPI MISO GPIO"
+            default 21
+        config PS_LEPTON_SPI_CS
+            int "VoSPI CS GPIO"
+            default 22
+        config PS_LEPTON_VSYNC
+            int "VSYNC (Lepton GPIO3) GPIO, -1 to poll"
+            default 23
+        config PS_LEPTON_RESET
+            int "RESET_L GPIO, -1 if not wired"
+            default -1
+        config PS_LEPTON_PWR_DN
+            int "PWR_DWN_L GPIO, -1 if not wired"
+            default -1
+        config PS_LEPTON_SPI_HZ
+            int "VoSPI clock (Hz, max 20 MHz)"
+            range 4000000 20000000
+            default 16000000
+        config PS_LEPTON_CHECK_CRC
+            bool "Check VoSPI packet CRC"
+            default y
+    endmenu
+
+    menu "Sensor I2C bus (Lepton CCI + BNO085)"
+        config PS_SENSORS_ON_CODEC_BUS
+            bool "Share the codec I2C bus instead of a separate bus"
+            default n
+            help
+                The BNO085 stretches the clock; a separate bus keeps audio
+                codec traffic independent of it.
+        config PS_SENSOR_I2C_SDA
+            int "SDA GPIO"
+            depends on !PS_SENSORS_ON_CODEC_BUS
+            default 32
+        config PS_SENSOR_I2C_SCL
+            int "SCL GPIO"
+            depends on !PS_SENSORS_ON_CODEC_BUS
+            default 33
+        config PS_SENSOR_I2C_HZ
+            int "Clock (Hz)"
+            default 400000
+    endmenu
+
+    menu "IMU (BNO085)"
+        config PS_BNO085_ADDR
+            hex "I2C address"
+            default 0x4A
+        config PS_BNO085_INT
+            int "H_INTN GPIO"
+            default 47
+        config PS_BNO085_RST
+            int "NRST GPIO, -1 for soft reset only"
+            default 48
+    endmenu
+
+    menu "Micro-OLED (MIPI-DSI)"
+        config PS_OLED_H_RES
+            int "Horizontal resolution"
+            default 1024
+        config PS_OLED_V_RES
+            int "Vertical resolution"
+            default 768
+        config PS_OLED_HSYNC_PW
+            int "HSYNC pulse width (pixels)"
+            default 10
+        config PS_OLED_HBP
+            int "Horizontal back porch"
+            default 40
+        config PS_OLED_HFP
+            int "Horizontal front porch"
+            default 40
+        config PS_OLED_VSYNC_PW
+            int "VSYNC pulse width (lines)"
+            default 2
+        config PS_OLED_VBP
+            int "Vertical back porch"
+            default 10
+        config PS_OLED_VFP
+            int "Vertical front porch"
+            default 10
+        config PS_OLED_DPI_CLK_MHZ
+            int "Pixel clock (MHz)"
+            default 52
+            help
+                1024x768 at 60 Hz with the default porches needs ~52 MHz.
+        config PS_OLED_LANES
+            int "DSI data lanes"
+            range 1 2
+            default 2
+        config PS_OLED_LANE_MBPS
+            int "DSI lane bit rate (Mbps)"
+            default 1000
+        config PS_OLED_RGB888
+            bool "Panel takes RGB888 over DSI (else RGB565)"
+            default y
+        config PS_OLED_SCALE
+            int "Integer upscale of the 320x240 HUD"
+            range 1 4
+            default 3
+        config PS_OLED_RESET
+            int "Panel reset GPIO, -1 if none"
+            default 27
+        config PS_OLED_BRIGHTNESS_2BYTES
+            bool "DCS 0x51 brightness takes 2 bytes"
+            default n
+        config PS_DSI_PHY_LDO_CHAN
+            int "On-chip LDO channel for the DSI PHY (-1: external)"
+            default 3
+        config PS_DSI_PHY_LDO_MV
+            int "DSI PHY LDO voltage (mV)"
+            default 2500
+    endmenu
+
+    menu "Audio (ES8311)"
+        config PS_CODEC_I2C_SDA
+            int "Codec I2C SDA GPIO"
+            default 7
+        config PS_CODEC_I2C_SCL
+            int "Codec I2C SCL GPIO"
+            default 8
+        config PS_CODEC_ADDR
+            hex "ES8311 7-bit address"
+            default 0x18
+        config PS_I2S_MCLK
+            int "I2S MCLK GPIO"
+            default 13
+        config PS_I2S_BCLK
+            int "I2S BCLK GPIO"
+            default 12
+        config PS_I2S_WS
+            int "I2S WS GPIO"
+            default 10
+        config PS_I2S_DOUT
+            int "I2S DOUT GPIO"
+            default 9
+        config PS_PA_ENABLE
+            int "Speaker amplifier enable GPIO, -1 for headphones only"
+            default 53
+        config PS_AUDIO_VOLUME
+            int "Volume (0-100)"
+            range 0 100
+            default 75
+    endmenu
+
+    menu "Buttons and battery"
+        config PS_BUTTON_A
+            int "Button A GPIO (where-out / mark entry)"
+            default 45
+        config PS_BUTTON_B
+            int "Button B GPIO (palette / brightness)"
+            default 46
+        config PS_BUTTON_LONG_MS
+            int "Long press (ms)"
+            default 1500
+        config PS_BATT_ADC_GPIO
+            int "Battery divider ADC GPIO, -1 if none"
+            default 16
+        config PS_BATT_R_TOP
+            int "Divider top resistor (ohm)"
+            default 100000
+        config PS_BATT_R_BOTTOM
+            int "Divider bottom resistor (ohm)"
+            default 100000
+    endmenu
+
+    menu "Detector and power"
+        config PS_NEURAL_DETECTOR
+            bool "Use the ESP-DL model from the \"model\" partition"
+            default y
+        config PS_INFER_DEADLINE_MS
+            int "Inference deadline (ms); slower results are replaced by the classical detector"
+            default 62
+        config PS_LIGHT_SLEEP
+            bool "Allow automatic light sleep (bench builds without a panel only)"
+            default n
+        config PS_STATS_PERIOD_MS
+            int "Statistics log period (ms)"
+            default 5000
+    endmenu
+
+endmenu

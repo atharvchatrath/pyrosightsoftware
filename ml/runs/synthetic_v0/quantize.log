@@ -1,0 +1,126 @@
+calibration set (64, 1, 120, 160) -> ml/runs/synthetic_v0/calib.npy
+
+    ___________ ____        ____  ____  ____
+   / ____/ ___// __ \      / __ \/ __ \/ __ \
+  / __/  \__ \/ /_/ /_____/ /_/ / /_/ / / / /
+ / /___ ___/ / ____/_____/ ____/ ____/ /_/ /
+/_____//____/_/         /_/   /_/    \___\_\
+
+
+[18:46:52] ConvTranspose Decomposition Pass Running ... Finished.
+[38;5;3m[WARNING][PPQ][2026-10-02 18:46:52]:  [mUnexpected input value of operation /up16/Resize, recieving "None" at its input 1
+[38;5;3m[WARNING][PPQ][2026-10-02 18:46:52]:  [mUnexpected input value of operation /up8/Resize, recieving "None" at its input 1
+[18:46:52] PPQ Quantization Fusion Pass Running ...       Finished.
+[18:46:52] PPQ Quantize Simplify Pass Running ...         Finished.
+[18:46:52] PPQ Parameter Quantization Pass Running ...    Finished.
+[18:46:52] PPQ Runtime Calibration Pass Running ...       Calibration Progress(Phase 1):   0%|          | 0/64 [00:00<?, ?it/s]Calibration Progress(Phase 1):  22%|██▏       | 14/64 [00:00<00:00, 134.78it/s]Calibration Progress(Phase 1):  50%|█████     | 32/64 [00:00<00:00, 157.42it/s]Calibration Progress(Phase 1):  77%|███████▋  | 49/64 [00:00<00:00, 159.65it/s]Calibration Progress(Phase 1): 100%|██████████| 64/64 [00:00<00:00, 144.22it/s]
+Calibration Progress(Phase 2):   0%|          | 0/64 [00:00<?, ?it/s]Calibration Progress(Phase 2):  22%|██▏       | 14/64 [00:00<00:00, 134.82it/s]Calibration Progress(Phase 2):  44%|████▍     | 28/64 [00:00<00:00, 122.61it/s]Calibration Progress(Phase 2):  64%|██████▍   | 41/64 [00:00<00:00, 122.93it/s]Calibration Progress(Phase 2):  84%|████████▍ | 54/64 [00:00<00:00, 125.32it/s]Calibration Progress(Phase 2): 100%|██████████| 64/64 [00:00<00:00, 121.36it/s]
+Finished.
+[18:46:53] PPQ Quantization Alignment Pass Running ...    Finished.
+[18:46:53] PPQ Passive Parameter Quantization Running ... Finished.
+--------- Network Snapshot ---------
+Num of Op:                    [33]
+Num of Quantized Op:          [33]
+Num of Variable:              [67]
+Num of Quantized Var:         [67]
+------- Quantization Snapshot ------
+Num of Quant Config:          [102]
+ACTIVATED:                    [32]
+OVERLAPPED:                   [41]
+PASSIVE:                      [25]
+FP32:                         [4]
+Network Quantization Finished.
+Analysing Graphwise Quantization Error(Phrase 1)::   0%|          | 0/8 [00:00<?, ?it/s]Analysing Graphwise Quantization Error(Phrase 1)::  62%|██████▎   | 5/8 [00:00<00:00, 42.59it/s]Analysing Graphwise Quantization Error(Phrase 1):: 100%|██████████| 8/8 [00:00<00:00, 42.54it/s]
+Analysing Graphwise Quantization Error(Phrase 2)::   0%|          | 0/8 [00:00<?, ?it/s]Analysing Graphwise Quantization Error(Phrase 2)::  62%|██████▎   | 5/8 [00:00<00:00, 41.21it/s]Analysing Graphwise Quantization Error(Phrase 2):: 100%|██████████| 8/8 [00:00<00:00, 37.55it/s]
+Layer                    | NOISE:SIGNAL POWER RATIO 
+/off/Conv:               | ████████████████████ | 5.915%
+/red8/red8.0/Conv:       | ████████████████     | 4.794%
+/s16/s16.0/s16.0.0/Conv: | ████████████████     | 4.648%
+/s8/s8.1/s8.1.0/Conv:    | ██████████████       | 4.189%
+/fuse4/fuse4.0/Conv:     | ██████████████       | 4.112%
+/s8/s8.0/s8.0.0/Conv:    | █████████████        | 3.952%
+/fuse8/fuse8.0/Conv:     | ███████████          | 3.350%
+/s16/s16.1/s16.1.0/Conv: | ███████████          | 3.341%
+/lat16/lat16.0/Conv:     | █████████            | 2.910%
+/s16/s16.2/s16.2.0/Conv: | █████████            | 2.827%
+/s4/s4.1/s4.1.0/Conv:    | ████████             | 2.371%
+/wh/Conv:                | ███████              | 2.080%
+/s4/s4.0/s4.0.0/Conv:    | ███                  | 0.968%
+/stem/stem.0/Conv:       |                      | 0.248%
+/heat/Conv:              |                      | 0.202%
+Analysing Layerwise quantization error::   0%|          | 0/15 [00:00<?, ?it/s]Analysing Layerwise quantization error::  13%|█▎        | 2/15 [00:00<00:00, 14.00it/s]Analysing Layerwise quantization error::  27%|██▋       | 4/15 [00:00<00:00, 14.47it/s]Analysing Layerwise quantization error::  40%|████      | 6/15 [00:00<00:00, 12.70it/s]Analysing Layerwise quantization error::  53%|█████▎    | 8/15 [00:00<00:00, 12.49it/s]Analysing Layerwise quantization error::  67%|██████▋   | 10/15 [00:00<00:00, 12.43it/s]Analysing Layerwise quantization error::  80%|████████  | 12/15 [00:00<00:00, 13.07it/s]Analysing Layerwise quantization error::  93%|█████████▎| 14/15 [00:01<00:00, 13.11it/s]Analysing Layerwise quantization error:: 100%|██████████| 15/15 [00:01<00:00, 13.18it/s]
+Layer                    | NOISE:SIGNAL POWER RATIO 
+/stem/stem.0/Conv:       | ████████████████████ | 0.643%
+/s4/s4.1/s4.1.0/Conv:    |                      | 0.008%
+/s4/s4.0/s4.0.0/Conv:    |                      | 0.002%
+/s8/s8.1/s8.1.0/Conv:    |                      | 0.001%
+/off/Conv:               |                      | 0.001%
+/heat/Conv:              |                      | 0.001%
+/fuse4/fuse4.0/Conv:     |                      | 0.001%
+/red8/red8.0/Conv:       |                      | 0.001%
+/s8/s8.0/s8.0.0/Conv:    |                      | 0.000%
+/fuse8/fuse8.0/Conv:     |                      | 0.000%
+/wh/Conv:                |                      | 0.000%
+/s16/s16.1/s16.1.0/Conv: |                      | 0.000%
+/s16/s16.2/s16.2.0/Conv: |                      | 0.000%
+/s16/s16.0/s16.0.0/Conv: |                      | 0.000%
+/lat16/lat16.0/Conv:     |                      | 0.000%
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_0 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_1 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_0 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_1 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_0 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_1 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mskip not QuantableOperation
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mskip not QuantableOperation
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_0 because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip  because it's not exportable
+[38;5;2m[INFO][ESPDL][2026-10-02 18:46:54]:  [mSkip PPQ_Variable_1 because it's not exportable
+{
+ "eval_set": "synthetic n=300 seed0=20000000",
+ "scheme": "int8 symmetric, per-tensor power-of-two scales (weights and activations), MSE-searched exponents",
+ "input_exponent": -7,
+ "note_input": "input code/255 in int8 with scale 2^-7 keeps half of the 256 code levels",
+ "float": {
+  "map50": 0.7685,
+  "ap50": {
+   "fire": 0.837,
+   "person": 0.7
+  }
+ },
+ "int8_sim": {
+  "map50": 0.6617,
+  "ap50": {
+   "fire": 0.8257,
+   "person": 0.4976
+  }
+ },
+ "int8_sim_by_smoke": {
+  "all": 0.6617,
+  "clear": 0.6921,
+  "light": 0.661,
+  "heavy": 0.6088
+ },
+ "int8_sim_per_channel_weights": {
+  "map50": 0.7669,
+  "ap50": {
+   "fire": 0.844,
+   "person": 0.6899
+  }
+ },
+ "map50_drop": 0.1068,
+ "map50_drop_per_channel_weights": 0.0016,
+ "note": "int8_sim = per-tensor po2 on weights and activations (strict). esp-ppq's esp32p4 config (see model.json) uses per-channel po2 weights + per-tensor po2 activations, which int8_sim_per_channel_weights mirrors; that is the closer estimate of the .espdl. Per-tensor weight scales after BN folding cause most of the strict-sim loss.",
+ "esp_ppq": {
+  "status": "ok",
+  "espdl": "ml/runs/synthetic_v0/model.espdl",
+  "bytes": 344720
+ }
+}

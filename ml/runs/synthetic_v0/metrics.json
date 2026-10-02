@@ -1,0 +1,293 @@
+{
+ "WARNING": "SYNTHETIC-ONLY WEIGHTS. Pipeline demo, NOT field-usable. Metrics below measure fit to the synthetic generator (ml/synth.py) and to the C simulator's ray-cast scenes; they say nothing about real fireground performance.",
+ "model": {
+  "name": "PyroNet",
+  "params": 286062,
+  "conv_macs_estimate": 54835200,
+  "onnx_ops": [
+   "Add",
+   "Constant",
+   "Conv",
+   "Relu",
+   "Resize",
+   "Sigmoid"
+  ],
+  "onnxruntime_max_abs_diff": 3.0517578125e-05
+ },
+ "training": {
+  "data": "16000 synthetic frames (ml/synth.py seeds 0..15999) + augmentation",
+  "epochs": 9,
+  "wall_clock_s": 675,
+  "final_val_loss": 1.795851930975914,
+  "device": "CPU (4 shared cores)"
+ },
+ "protocol": {
+  "ap": "AP@0.5 VOC all-point, decoder mirror thr 0.05 max 100 det",
+  "pr": "device decode thr 0.35, max 16 det",
+  "distance": "matched persons at 0.35, f_px*1.7/max(w,h) vs label; formula_on_gt_box = prior's own error",
+  "smoke_slices": "clear <0.2, light 0.2-0.5, heavy >0.5"
+ },
+ "eval_synthetic_heldout": {
+  "set": "500 fresh synthetic frames, seed0=20000000",
+  "all": {
+   "frames": 500,
+   "classes": {
+    "fire": {
+     "n_gt": 340,
+     "ap50": 0.8378,
+     "precision_at_0_35": 0.8659,
+     "recall_at_0_35": 0.8353,
+     "fp_at_0_35": 44
+    },
+    "person": {
+     "n_gt": 563,
+     "ap50": 0.7043,
+     "precision_at_0_35": 0.8628,
+     "recall_at_0_35": 0.6146,
+     "fp_at_0_35": 55
+    }
+   },
+   "map50": 0.771,
+   "person_distance": {
+    "n": 346,
+    "mae_m": 1.639,
+    "median_abs_rel": 0.191,
+    "mean_rel_bias": 0.359,
+    "formula_on_gt_box_median_abs_rel": 0.271
+   }
+  },
+  "clear": {
+   "frames": 226,
+   "classes": {
+    "fire": {
+     "n_gt": 141,
+     "ap50": 0.8225,
+     "precision_at_0_35": 0.8369,
+     "recall_at_0_35": 0.8369,
+     "fp_at_0_35": 23
+    },
+    "person": {
+     "n_gt": 246,
+     "ap50": 0.7202,
+     "precision_at_0_35": 0.8736,
+     "recall_at_0_35": 0.6463,
+     "fp_at_0_35": 23
+    }
+   },
+   "map50": 0.7713,
+   "person_distance": {
+    "n": 159,
+    "mae_m": 1.69,
+    "median_abs_rel": 0.198,
+    "mean_rel_bias": 0.387,
+    "formula_on_gt_box_median_abs_rel": 0.284
+   }
+  },
+  "light": {
+   "frames": 157,
+   "classes": {
+    "fire": {
+     "n_gt": 110,
+     "ap50": 0.8398,
+     "precision_at_0_35": 0.8762,
+     "recall_at_0_35": 0.8364,
+     "fp_at_0_35": 13
+    },
+    "person": {
+     "n_gt": 166,
+     "ap50": 0.713,
+     "precision_at_0_35": 0.8547,
+     "recall_at_0_35": 0.6024,
+     "fp_at_0_35": 17
+    }
+   },
+   "map50": 0.7764,
+   "person_distance": {
+    "n": 100,
+    "mae_m": 1.712,
+    "median_abs_rel": 0.192,
+    "mean_rel_bias": 0.394,
+    "formula_on_gt_box_median_abs_rel": 0.32
+   }
+  },
+  "heavy": {
+   "frames": 117,
+   "classes": {
+    "fire": {
+     "n_gt": 89,
+     "ap50": 0.8614,
+     "precision_at_0_35": 0.9024,
+     "recall_at_0_35": 0.8315,
+     "fp_at_0_35": 8
+    },
+    "person": {
+     "n_gt": 151,
+     "ap50": 0.6715,
+     "precision_at_0_35": 0.8529,
+     "recall_at_0_35": 0.5762,
+     "fp_at_0_35": 15
+    }
+   },
+   "map50": 0.7664,
+   "person_distance": {
+    "n": 87,
+    "mae_m": 1.462,
+    "median_abs_rel": 0.179,
+    "mean_rel_bias": 0.269,
+    "formula_on_gt_box_median_abs_rel": 0.165
+   }
+  }
+ },
+ "eval_c_simulator": {
+  "set": "ps_sim --dump-dataset, 4 scenarios x smoke {0,0.35,0.8} x seeds {1,2}, every 6th frame (ml/sim_dataset.py); smoke is a per-run constant so slices are by run",
+  "all": {
+   "frames": 1578,
+   "classes": {
+    "fire": {
+     "n_gt": 258,
+     "ap50": 0.8039,
+     "precision_at_0_35": 0.8952,
+     "recall_at_0_35": 0.7946,
+     "fp_at_0_35": 24
+    },
+    "person": {
+     "n_gt": 528,
+     "ap50": 0.5259,
+     "precision_at_0_35": 0.7801,
+     "recall_at_0_35": 0.4167,
+     "fp_at_0_35": 62
+    }
+   },
+   "map50": 0.6649,
+   "person_distance": {
+    "n": 220,
+    "mae_m": 1.149,
+    "median_abs_rel": 0.073,
+    "mean_rel_bias": 0.266,
+    "formula_on_gt_box_median_abs_rel": 0.149
+   }
+  },
+  "clear": {
+   "frames": 526,
+   "classes": {
+    "fire": {
+     "n_gt": 86,
+     "ap50": 0.8116,
+     "precision_at_0_35": 0.8706,
+     "recall_at_0_35": 0.8605,
+     "fp_at_0_35": 11
+    },
+    "person": {
+     "n_gt": 176,
+     "ap50": 0.6718,
+     "precision_at_0_35": 0.8571,
+     "recall_at_0_35": 0.5455,
+     "fp_at_0_35": 16
+    }
+   },
+   "map50": 0.7417,
+   "person_distance": {
+    "n": 96,
+    "mae_m": 1.228,
+    "median_abs_rel": 0.103,
+    "mean_rel_bias": 0.292,
+    "formula_on_gt_box_median_abs_rel": 0.149
+   }
+  },
+  "light": {
+   "frames": 526,
+   "classes": {
+    "fire": {
+     "n_gt": 86,
+     "ap50": 0.8281,
+     "precision_at_0_35": 0.9125,
+     "recall_at_0_35": 0.8488,
+     "fp_at_0_35": 7
+    },
+    "person": {
+     "n_gt": 176,
+     "ap50": 0.4348,
+     "precision_at_0_35": 0.6699,
+     "recall_at_0_35": 0.392,
+     "fp_at_0_35": 34
+    }
+   },
+   "map50": 0.6315,
+   "person_distance": {
+    "n": 69,
+    "mae_m": 1.148,
+    "median_abs_rel": 0.065,
+    "mean_rel_bias": 0.26,
+    "formula_on_gt_box_median_abs_rel": 0.149
+   }
+  },
+  "heavy": {
+   "frames": 526,
+   "classes": {
+    "fire": {
+     "n_gt": 86,
+     "ap50": 0.7969,
+     "precision_at_0_35": 0.9062,
+     "recall_at_0_35": 0.6744,
+     "fp_at_0_35": 6
+    },
+    "person": {
+     "n_gt": 176,
+     "ap50": 0.5286,
+     "precision_at_0_35": 0.8209,
+     "recall_at_0_35": 0.3125,
+     "fp_at_0_35": 12
+    }
+   },
+   "map50": 0.6628,
+   "person_distance": {
+    "n": 55,
+    "mae_m": 1.011,
+    "median_abs_rel": 0.071,
+    "mean_rel_bias": 0.228,
+    "formula_on_gt_box_median_abs_rel": 0.149
+   }
+  }
+ },
+ "quantization": {
+  "eval_set": "synthetic n=300 seed0=20000000",
+  "scheme": "int8 symmetric, per-tensor power-of-two scales (weights and activations), MSE-searched exponents",
+  "input_exponent": -7,
+  "note_input": "input code/255 in int8 with scale 2^-7 keeps half of the 256 code levels",
+  "float": {
+   "map50": 0.7685,
+   "ap50": {
+    "fire": 0.837,
+    "person": 0.7
+   }
+  },
+  "int8_sim": {
+   "map50": 0.6617,
+   "ap50": {
+    "fire": 0.8257,
+    "person": 0.4976
+   }
+  },
+  "int8_sim_by_smoke": {
+   "all": 0.6617,
+   "clear": 0.6921,
+   "light": 0.661,
+   "heavy": 0.6088
+  },
+  "int8_sim_per_channel_weights": {
+   "map50": 0.7669,
+   "ap50": {
+    "fire": 0.844,
+    "person": 0.6899
+   }
+  },
+  "map50_drop": 0.1068,
+  "map50_drop_per_channel_weights": 0.0016,
+  "note": "int8_sim = per-tensor po2 on weights and activations (strict). esp-ppq's esp32p4 config (see model.json) uses per-channel po2 weights + per-tensor po2 activations, which int8_sim_per_channel_weights mirrors; that is the closer estimate of the .espdl. Per-tensor weight scales after BN folding cause most of the strict-sim loss.",
+  "esp_ppq": {
+   "status": "ok",
+   "espdl": "ml/runs/synthetic_v0/model.espdl",
+   "bytes": 344720
+  }
+ }
+}

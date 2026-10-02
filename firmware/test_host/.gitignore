@@ -1,0 +1,7 @@
+out/
+test_lepton
+test_shtp
+test_audio_pack
+test_buttons
+test_detector_quant
+test_power_adc
