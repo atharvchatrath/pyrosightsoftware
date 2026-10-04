@@ -1,0 +1,32 @@
+# Regenerable or third-party bulk; see README.md "Rebuild" / "Tests" for how to recreate each.
+node_modules/
+assets/
+firedoor/data/
+build/
+*.y4m
+*.webm
+tests/out/*.bin
+runtime/tests/out/*.bin
+runtime/tests/out/onnx/
+runtime/tests/out/corpus/
+page/tests/out/*.html
+page/tests/out/*.bin
+__pycache__/
+# CGTN/CCTV news footage from the FireNET repo: local testing only, never publish
+testdata/fire/clips/fire_road_*
+testdata/negatives/clips/road_before_fire*
+# MediaPipe test portraits: no per-image licence, local testing only
+testdata/people/mediapipe/
+# Scratch from verification and intermediate builds (regenerable)
+verify_*/
+page/build/
+page/dist/
+page/tests/out/
+runtime/tests/out/
+tests/out/
+testdata/
+firedoor/runs/
+runtime/models/cocossd_*f32*
+runtime/models/cocossd_*f16*
+runtime/models/cocossd_all_*
+runtime/dist/people_demo.html

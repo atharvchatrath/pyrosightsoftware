@@ -1,0 +1,230 @@
+<title>PyroSight Camera</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --fg: #15181d;
+  --muted: #5d6573;
+  --border: #dcdfe5;
+  --accent: #e2552b;
+  --accent-fg: #ffffff;
+  --chip: #eef0f3;
+  --screen: #0a0d12;
+  --good: #1d9a50;
+  --warn: #b97700;
+  --bad: #d43d3d;
+  --person: #ffffff;
+  --fire: #c850ff;
+  --exit: #28ff50;
+  --notice-bg: #fff6e8;
+  --notice-border: #f0d4a8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1115;
+    --surface: #161a20;
+    --fg: #e7eaef;
+    --muted: #98a1af;
+    --border: #2a313b;
+    --chip: #1f252d;
+    --warn: #e0a53a;
+    --notice-bg: #2a2216;
+    --notice-border: #4d3d22;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1115;
+  --surface: #161a20;
+  --fg: #e7eaef;
+  --muted: #98a1af;
+  --border: #2a313b;
+  --chip: #1f252d;
+  --warn: #e0a53a;
+  --notice-bg: #2a2216;
+  --notice-border: #4d3d22;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 32px; }
+header { margin-bottom: 16px; }
+h1 { font-size: 22px; line-height: 1.2; margin: 0 0 4px; letter-spacing: -0.01em; }
+h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: 2px; }
+.sub { margin: 0; color: var(--muted); max-width: 760px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.col { display: grid; gap: 16px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; min-width: 0; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; font-weight: 650; }
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+.engine { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.screen { position: relative; background: var(--screen); border-radius: 8px; overflow: hidden; width: 100%; aspect-ratio: 4 / 3; max-height: 72vh; touch-action: manipulation; }
+.screen video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; pointer-events: none; }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+.overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 8, 12, 0.6); color: #fff; text-align: center; padding: 16px;
+}
+.overlay[hidden] { display: none; }
+.overlay .box { max-width: 440px; display: grid; gap: 10px; justify-items: center; }
+.overlay p { margin: 0; }
+.overlay .big { font-size: 17px; font-weight: 600; }
+.overlay .small { font-size: 13px; color: #c6ccd6; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px 5px 6px; border-radius: 999px; background: var(--chip); font-size: 13px; }
+.sw { width: 22px; height: 16px; border-radius: 4px; background: var(--screen); position: relative; flex: none; }
+.sw::after { content: ""; position: absolute; inset: 3px 4px; border: 2px solid currentColor; border-radius: 1px; }
+.sw.person { color: var(--person); } .sw.fire { color: var(--fire); } .sw.exit { color: var(--exit); }
+.controls { display: grid; gap: 10px; margin-top: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button {
+  font: inherit; font-size: 14px; color: var(--fg); background: var(--chip); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: 0.5; cursor: default; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+button[hidden] { display: none; }
+.overlay button { font-size: 15px; }
+.overlay button.ghost { background: transparent; color: #fff; border-color: rgba(255, 255, 255, 0.45); }
+.notice { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--notice-bg); border: 1px solid var(--notice-border); display: grid; gap: 8px; }
+.notice[hidden] { display: none; }
+.notice p { margin: 0; }
+.notice .t { font-weight: 650; }
+.stats { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
+.stat { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.stat .v { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat .v.bad { color: var(--bad); } .stat .v.warn { color: var(--warn); }
+ol.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 260px; overflow: auto; }
+ol.log li { display: flex; gap: 10px; font-size: 14px; }
+ol.log time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 64px; }
+ol.log li.empty { color: var(--muted); }
+.about p { margin: 0 0 8px; font-size: 14px; }
+.about p:last-child { margin-bottom: 0; }
+.about .privacy { font-weight: 600; }
+.foot { margin-top: 16px; color: var(--muted); font-size: 13px; max-width: 860px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 900px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .stat { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .overlay .big { font-size: 16px; }
+}
+</style>
+
+<div class="wrap" id="ps-root">
+  <header>
+    <h1><span class="dot"></span>PyroSight Camera</h1>
+    <p class="sub">Your own camera with the PyroSight eyepiece boxes: people in a white box with a rough distance, fire in purple, the way out in green. The detectors run inside this page, so video never leaves your device.</p>
+  </header>
+
+  <div class="grid">
+    <div class="col">
+      <section class="card" aria-labelledby="cam-h">
+        <div class="card-head">
+          <h2 id="cam-h">Camera</h2>
+          <span class="engine" id="engine">Loading detectors…</span>
+        </div>
+        <div class="screen" id="screen">
+          <video id="cam-video" muted playsinline autoplay aria-hidden="true"></video>
+          <video id="file-video" muted playsinline loop aria-hidden="true"></video>
+          <canvas id="view" width="640" height="480" role="img" aria-label="Camera picture with detection boxes"></canvas>
+          <div class="overlay" id="overlay">
+            <div class="box">
+              <p class="big" id="ov-title">Point your camera at a face, a fire or a door</p>
+              <p class="small" id="ov-text">The picture is checked on this device. Video never leaves your device.</p>
+              <div class="row" style="justify-content:center">
+                <button class="primary" id="ov-start">Start camera</button>
+                <button class="ghost" id="ov-file">Open a photo or video</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="legend" aria-label="Box colours">
+          <span class="chip"><i class="sw person"></i>Person</span>
+          <span class="chip"><i class="sw fire"></i>Fire</span>
+          <span class="chip"><i class="sw exit"></i>Way out (door or your mark)</span>
+        </div>
+
+        <div class="notice" id="notice" hidden role="status">
+          <p class="t" id="notice-title">Camera not available</p>
+          <p id="notice-text"></p>
+          <p class="hint" id="notice-hint">You can still try it:</p>
+          <div class="row">
+            <button id="n-file">Analyse a photo or video</button>
+            <button id="n-save" hidden>Save this page and open it in your browser</button>
+          </div>
+          <p class="hint" id="n-save-msg" aria-live="polite"></p>
+        </div>
+
+        <div class="controls" aria-label="Controls">
+          <div class="row">
+            <button class="primary" id="start">Start camera</button>
+            <button id="switch" hidden>Switch camera</button>
+            <button id="file-btn">Open photo or video</button>
+            <input type="file" id="file" accept="image/*,video/*" class="sr" tabindex="-1" aria-hidden="true">
+          </div>
+          <div class="row">
+            <button id="mark" disabled>Mark way out</button>
+            <button id="whereout" disabled>Where’s the way out?</button>
+            <button id="clear-mark" hidden>Clear mark</button>
+          </div>
+          <div class="row">
+            <button id="voice" aria-pressed="false">Voice: off</button>
+            <button id="eyepiece" aria-pressed="false">Eyepiece view: off</button>
+          </div>
+          <p class="hint" id="hint">Mark way out remembers where the camera points now; or tap the picture to mark that spot.</p>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="al-h">
+        <div class="card-head"><h2 id="al-h">Spoken alerts</h2><span class="hint">What the earpiece would say</span></div>
+        <ol class="log" id="log" role="log" aria-live="polite"><li class="empty">Nothing yet.</li></ol>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card" aria-labelledby="st-h">
+        <div class="card-head"><h2 id="st-h">Status</h2><span class="engine" id="tensors"></span></div>
+        <div class="stats">
+          <div class="stat"><div class="k">In view now</div><div class="v" id="s-seen">–</div></div>
+          <div class="stat"><div class="k">Way out</div><div class="v" id="s-exit">Not marked</div></div>
+          <div class="stat"><div class="k">Turn tracking</div><div class="v" id="s-track">–</div></div>
+          <div class="stat"><div class="k">Source</div><div class="v" id="s-source">None</div></div>
+          <div class="stat"><div class="k">Detector speed</div><div class="v" id="s-speed">–</div></div>
+          <div class="stat"><div class="k">Runs on</div><div class="v" id="s-engine">Loading…</div></div>
+          <div class="stat"><div class="k">Fire and doors</div><div class="v" id="s-fd">Loading…</div></div>
+        </div>
+      </section>
+
+      <section class="card about" aria-labelledby="ab-h">
+        <div class="card-head"><h2 id="ab-h">About this view</h2></div>
+        <p class="privacy">Video never leaves your device. Everything runs inside this page; nothing is uploaded, recorded or stored.</p>
+        <p>This uses an ordinary camera, which sees light. It cannot see through smoke or in the dark. The real PyroSight eyepiece uses a thermal camera that sees heat. Eyepiece view only imitates its grey picture; it is not thermal imaging.</p>
+        <p>Mark way out remembers a direction and follows it as you turn the camera, from how the picture moves and from the motion sensor on phones that report one. It does not know where you are or how far you have walked, so it is not navigation through a building.</p>
+        <p>Distances are rough estimates from the size of a face or body and an assumed camera field of view of 65°.</p>
+        <p>The fire and door detector is small and was trained on a few hundred public fire photos and a few thousand door photos. It misses many small or distant flames (a candle or lighter is found more often near the middle of the picture), can box a bright bulb, lamp, LED or low sun as fire, and finds only clear, face-on doors.</p>
+        <p class="hint" id="credits">People and faces: COCO-SSD (TensorFlow.js models) and MediaPipe BlazeFace, Apache-2.0. TensorFlow.js, Apache-2.0.</p>
+        <div class="row" style="margin-top:10px">
+          <button id="save2" hidden>Save this page and open it in your browser</button>
+        </div>
+        <p class="hint" id="save2-msg" aria-live="polite"></p>
+      </section>
+    </div>
+  </div>
+
+  <p class="foot">PyroSight demo for ordinary cameras. Not a safety device: never rely on it to find people, fire or a way out.</p>
+</div>

@@ -1,0 +1,122 @@
+{
+ "firedoor": {
+  "onnx": "firedoor/export/firedoor.onnx",
+  "weights": "float16",
+  "meta": {
+   "name": "FireDoorNet (fire and door detector, trained on small public datasets)",
+   "credits": "Fire and doors: FireDoorNet, trained here on FireNET (MIT) and Open Images (annotations CC BY 4.0 Google LLC, images CC BY 2.0) from ImageNet MobileNetV2 weights (Apache-2.0).",
+   "decode": {
+    "thresholds": {
+     "fire": 0.5,
+     "door": 0.5
+    },
+    "nmsIou": 0.45,
+    "maxDet": 50
+   },
+   "hysteresis": {
+    "on": 0.5,
+    "keep": 0.35,
+    "iou": 0.1,
+    "maxGapMs": 5000
+   },
+   "zoom": {
+    "frac": 0.5,
+    "on": 0.6
+   }
+  }
+ },
+ "pages": [
+  {
+   "file": "dist/pyrosight_camera.html",
+   "bytes": 8229516,
+   "mb": 8.23,
+   "sha256": "8e6fdfbcf80679effb47f65c6bce594a2f5a58559cee01968971c22f2d888439",
+   "title_ok": true,
+   "parts": [
+    "ps-app",
+    "ps-firedoor",
+    "ps-motion",
+    "ps-oplist",
+    "ps-people",
+    "ps-people-assets",
+    "ps-shell",
+    "ps-tf"
+   ],
+   "problems": [],
+   "tfjs_http_strings": [
+    "http://a",
+    "http://a#\u0431",
+    "http://a/c%20d?a=1&c=3",
+    "http://www.apache.org/licenses/LICENSE-2.0",
+    "http://x",
+    "http://\u0442\u0435\u0441\u0442",
+    "https://a@b",
+    "https://arxiv.org/abs/1706.02515",
+    "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
+    "https://github.com/tensorflow/tfjs-node",
+    "https://github.com/tensorflow/tfjs/issues",
+    "https://github.com/tensorflow/tfjs/issues/1735",
+    "https://github.com/tensorflow/tfjs/issues/5447",
+    "https://github.com/zloirock/core-js",
+    "https://github.com/zloirock/core-js/blob/v3.29.1/LICENSE",
+    "https://www.shadertoy.com/view/4djSRW"
+   ],
+   "tfjs_fetch_calls": 5
+  },
+  {
+   "file": "dist/pyrosight_camera.fragment.html",
+   "bytes": 8229383,
+   "mb": 8.229,
+   "sha256": "56f4c33a29aef0bb174a354cc9c98e36162cbbd7783e34aec9b5f2e91e30f5c8",
+   "title_ok": true,
+   "parts": [
+    "ps-app",
+    "ps-firedoor",
+    "ps-motion",
+    "ps-oplist",
+    "ps-people",
+    "ps-people-assets",
+    "ps-shell",
+    "ps-tf"
+   ],
+   "problems": [],
+   "tfjs_http_strings": [
+    "http://a",
+    "http://a#\u0431",
+    "http://a/c%20d?a=1&c=3",
+    "http://www.apache.org/licenses/LICENSE-2.0",
+    "http://x",
+    "http://\u0442\u0435\u0441\u0442",
+    "https://a@b",
+    "https://arxiv.org/abs/1706.02515",
+    "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
+    "https://github.com/tensorflow/tfjs-node",
+    "https://github.com/tensorflow/tfjs/issues",
+    "https://github.com/tensorflow/tfjs/issues/1735",
+    "https://github.com/tensorflow/tfjs/issues/5447",
+    "https://github.com/zloirock/core-js",
+    "https://github.com/zloirock/core-js/blob/v3.29.1/LICENSE",
+    "https://www.shadertoy.com/view/4djSRW"
+   ],
+   "tfjs_fetch_calls": 5
+  }
+ ],
+ "page_build": {
+  "files": {
+   "pyrosight_camera.html": 8229516,
+   "pyrosight_camera.fragment.html": 8229383
+  },
+  "parts": {
+   "SHELL": 15257,
+   "TFJS": 1469867,
+   "OPLIST": 14361,
+   "PEOPLE": 20430,
+   "PEOPLE_ASSETS": 5156727,
+   "FIREDOOR": 1431558,
+   "MOTION": 31414,
+   "APP": 76847
+  },
+  "firedoor_included": true,
+  "firedoor_source": "/home/claude/pyrosight/camera/build/firedoor/firedoor"
+ }
+}

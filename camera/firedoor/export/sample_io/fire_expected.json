@@ -1,0 +1,18 @@
+{
+ "image": "fire.jpg",
+ "image_size": [
+  252,
+  200
+ ],
+ "resize": "cv2.resize to 320x256 (INTER_AREA when shrinking), RGB, x/127.5-1, NCHW",
+ "detections_default_thresholds": [
+  {
+   "cls": "fire",
+   "score": 0.631726086139679,
+   "x": 0.2136945053935051,
+   "y": 0.1650501498952508,
+   "w": 0.20498976707458497,
+   "h": 0.2489926517009735
+  }
+ ]
+}

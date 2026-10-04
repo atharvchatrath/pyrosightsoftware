@@ -1,0 +1,18 @@
+{
+ "image": "door.jpg",
+ "image_size": [
+  480,
+  640
+ ],
+ "resize": "cv2.resize to 320x256 (INTER_AREA when shrinking), RGB, x/127.5-1, NCHW",
+ "detections_default_thresholds": [
+  {
+   "cls": "door",
+   "score": 0.6480057239532471,
+   "x": 0.1431405261158943,
+   "y": 0.1561689730733633,
+   "w": 0.6435575962066651,
+   "h": 0.7738968133926392
+  }
+ ]
+}
