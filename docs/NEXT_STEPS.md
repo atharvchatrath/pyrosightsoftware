@@ -17,6 +17,25 @@ Read `README.md`, then `docs/ARCHITECTURE.md`. Datasets, training images and
 test videos are not in the repo (too big); the scripts that download or
 regenerate them are, see `ml/README.md` and `camera/README.md`.
 
+## Software work that needs no hardware
+
+Navigation (`core/src/ps_nav.c`) is written and tested in the simulator. On the
+simple 36 m corridor route the arrow alone got the simulated firefighter out in
+19 of 20 runs. On the hard routes (a long search with heavy gyro drift, 15 m of
+crawling, sensor dropouts) it got no one out by the arrow alone. It correctly
+said "unreliable, follow the hose" every time, and no one was lost, but the
+goal is for the arrow to work there too.
+
+- [ ] Make the arrow hold up on the hard routes: better heading-drift
+      correction, step counting while crawling, and recovery after sensor
+      dropouts. Measure every change with `python3 sim/monte_carlo.py --seeds 20`
+      and keep the corridor result at 19/20 or better.
+- [ ] Compile `firmware/` with ESP-IDF 5.3/5.4. Installing ESP-IDF needs no
+      board, and this has never been done, so expect build errors.
+- [ ] Add GitHub Actions that run the tests in "Getting started" on every push.
+- [ ] Change the model input to `(code-128)/128` (section 2) in `ml/` and the
+      firmware detector together.
+
 ## 1. Bring-up on the hardware (needs the parts)
 
 ESP32-P4 board, FLIR Lepton 3.5, Bosch BNO085, the 0.39" micro-OLED and the
