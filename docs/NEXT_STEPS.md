@@ -31,8 +31,8 @@ ES8311 audio codec. Details in `firmware/README.md`, "Known gaps".
       current one is a placeholder (`firmware/README.md`, micro-OLED section).
 - [ ] Confirm the ESP-DL model loader and tensor layout on the P4.
 - [ ] Check the CPU frequency steps assumed in `pwr_cpu_mhz_supported()`.
-- [ ] Get the full loop running on the device and measure frame rate (target
-      about 16 fps) and battery life.
+- [ ] Get the full loop running on the device and measure inference time
+      (budget 62 ms, see `docs/ARCHITECTURE.md`) and battery life.
 
 ## 2. Real training data (the biggest gap)
 
