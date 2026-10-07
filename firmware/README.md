@@ -191,8 +191,19 @@ panel:
 
 ## Known gaps
 
-* Not compiled against ESP-IDF in this repository's CI; only the
-  hardware-independent code is built and tested on the host.
+* **Never run on hardware.** The firmware now builds for the ESP32-P4 (ESP-IDF
+  v5.4.1, `.github/workflows/ci.yml` builds it on every push, and it was first
+  compiled by hand on 2026-10-05: 2,131,536 byte image, DIRAM 26% used), but a
+  binary that links is not a binary that works. Nothing here has driven a
+  Lepton, a BNO085, a panel or a codec.
+* The first compile found two faults that no host test could have caught, both
+  now fixed: `microoled` used `esp_timer.h` without declaring the dependency,
+  and `detector.cpp` formatted esp-dl 3.x's `ExponentInfo` with `%d`. The
+  second mattered beyond the warning — `ExponentInfo` converts to `int`
+  implicitly and yields the *per-tensor* exponent, so a per-channel quantised
+  model would have been dequantised with a single scale and produced silent
+  nonsense. Per-channel tensors are now rejected at load, which leaves the
+  classical detector running.
 * Lepton CCI command IDs marked `[check]` in `lepton_cci.h` (gain mode, FFC
   status, OEM reboot, TLinear auto-resolution) should be verified against the
   Lepton Software IDD for the camera's firmware; setup results are logged.
