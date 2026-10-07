@@ -538,9 +538,13 @@ SCN.csp = async () => {
     check('csp', 'video file plays via the data: URL fallback when blob: media is blocked', s.src.kind === 'video' && url.startsWith('data:video'), r.video);
     const viol = await page.evaluate(() => window.__csp);
     r.violations = viol;
-    // expected: the blocked blob: video URL, and Long.js (inside tf.min.js) probing for a tiny
-    // WebAssembly helper in a try/catch (it falls back to plain JS)
-    check('csp', 'only the expected CSP reports (blob: video; Long.js wasm probe)', viol.every((v) => /^media-src blob|^script-src wasm-eval/.test(v)), viol);
+    // expected: the blocked blob: video URL, Long.js (inside tf.min.js) probing for a tiny
+    // WebAssembly helper in a try/catch (it falls back to plain JS), and (since the detectors moved
+    // to a Web Worker) the refused blob: worker, after which the page runs them on its own thread
+    check('csp', 'only the expected CSP reports (blob: video; Long.js wasm probe; blob: worker and blob: scripts refused)', viol.every((v) => /^media-src blob|^script-src wasm-eval|^worker-src blob|^script-src(-elem)? blob/.test(v)), viol);
+    const eng = await page.evaluate(() => ({ mode: window.PSCamera.state.engineMode, workerError: window.PSCamera.state.workerError }));
+    r.engine = eng;
+    check('csp', "worker-src 'none': detectors fall back to the page's own thread", eng.mode === 'main' && !!eng.workerError, eng);
     check('csp', 'no page errors, no network', !rec.external.length && !rec.errors.length, rec);
     await shot(page, 'csp_host_video.png');
   } finally { await browser.close(); }
@@ -594,8 +598,255 @@ SCN.sensor = async () => {
   return r;
 };
 
+// ------------------------------------------------------------------ navigation (demo)
+// camera/nav (the device's navigation code as JavaScript) inside the page: no camera (as inside
+// claude.ai), demo walk + camera, camera-turn heading, the relationship with "Mark way out".
+const NAV_SHOTS = path.join(PAGE_DIR, '..', 'shots');
+// viewport shots: scrolled so that the camera picture is at the top (the taps scrolled the page)
+const navShot = async (page, name, full) => {
+  if (!full) await page.evaluate(() => { const r = document.getElementById('screen').getBoundingClientRect(); window.scrollBy(0, r.top - 8); });
+  await sleep(150);
+  await page.screenshot({ path: path.join(NAV_SHOTS, name), fullPage: !!full });
+};
+const NS = (page) => page.evaluate(() => {
+  const n = window.PSCamera.nav, u = window.PSCamera.navUi, g = n ? n.g : null;
+  return { on: u.on, input: n && { mode: n.input.mode, status: n.input.status, label: n.input.label, detail: n.input.detail },
+    g: g && { valid: g.valid, state: g.state, level: g.level, levelId: g.levelId, steps: g.steps, pos: g.pos, yawDeg: g.yaw * 180 / Math.PI,
+      route: g.routeDistM, home: g.homeDistM, routeBrg: g.routeBearingDeg, homeBrg: g.homeBearingDeg, word: g.word, exitIsNext: g.exitIsNext, conf: g.confidence },
+    walker: n && n.walker && { phase: n.walker.phase, result: n.walker.result }, overlay: u.overlay,
+    log: window.PSCamera.state.log.map((l) => l.text), spoken: window.__spoken.slice(), mark: !!window.PSCamera.state.mark,
+    markDisabled: document.getElementById('mark').disabled, hint: document.getElementById('hint').textContent,
+    inLabel: document.getElementById('nav-in-label').textContent, say: document.getElementById('nav-say').textContent,
+    sExit: document.getElementById('s-exit').textContent, overflow: document.documentElement.scrollWidth - window.innerWidth,
+    simView: document.getElementById('screen').classList.contains('sim') };
+});
+// green (#28FF50) pixels of the picture canvas inside a CSS-pixel-free canvas rect (device px)
+const greenIn = (page, r) => page.evaluate((r) => {
+  const c = document.getElementById('view'), d = c.getContext('2d').getImageData(Math.max(0, Math.floor(r.x)), Math.max(0, Math.floor(r.y)),
+    Math.max(1, Math.ceil(r.w)), Math.max(1, Math.ceil(r.h))).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 200 && d[i] < 120 && d[i + 2] < 150 && d[i + 3] > 200) n++;
+  return n;
+}, r);
+async function holdEl(page, sel, ms) {
+  const b = await (await page.$(sel)).boundingBox();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down(); await sleep(ms); await page.mouse.up();
+}
+// every visible button / select at least 44 px tall
+const smallTargets = (page) => page.evaluate(() => Array.from(document.querySelectorAll('button, select')).filter((b) => {
+  const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.height < 44 - 0.5;
+}).map((b) => b.id + ':' + b.getBoundingClientRect().height.toFixed(1)));
+
+// No camera at all (NotFoundError, like a blocked camera inside claude.ai): demo walk, guide me
+// out, voice, the simulated eyepiece view, auto demo, 390 px layout, iOS-style permission request.
+SCN.nav = async () => {
+  const r = {};
+  const PERM = `window.__perm = []; for (const k of ['DeviceMotionEvent', 'DeviceOrientationEvent']) { if (window[k]) window[k].requestPermission = () => {
+    window.__perm.push({ k, gesture: !!(navigator.userActivation && navigator.userActivation.isActive), t: performance.now() }); return Promise.resolve('granted'); }; }`;
+  const browser = await launch(null);
+  try {
+    for (const dark of [false, true]) {
+      const tag = dark ? 'dark' : 'light';
+      const { ctx, page, rec } = await newPage(browser, { viewport: { width: 390, height: 844 }, dpr: 2, mobile: true, dark, init: PERM });
+      await page.goto('file://' + DIST);
+      await sleep(2000);
+      const perm0 = await page.evaluate(() => window.__perm.length);
+      check('nav', `${tag}: no motion permission request on page load`, perm0 === 0, perm0);
+      await page.click('#start');                      // no camera here
+      await page.waitForSelector('#notice:not([hidden])', { timeout: 20000 });
+      await page.click('#voice');
+      // Start here: asks for motion permission inside the tap, finds no sensor data, falls back to the demo walk
+      await page.click('#nav-start');
+      const perm1 = await page.evaluate(() => window.__perm.slice());
+      check('nav', `${tag}: Start here asks for motion permission inside the tap (iOS flow)`, perm1.length >= 1 && perm1.every((p) => p.gesture), perm1);
+      await page.waitForFunction(() => window.PSCamera.nav.input.mode === 'demo', null, { timeout: 10000 });
+      let s = await NS(page);
+      r[tag] = { fallback: { input: s.input, inLabel: s.inLabel } };
+      check('nav', `${tag}: no sensor data and no camera -> demo walk, input indicator says so`, /Demo walk/.test(s.inLabel) && /Motion sensors not used/.test(s.input.detail) && s.g.valid, { inLabel: s.inLabel, detail: s.input.detail });
+      const pos0 = s.g.pos;
+      await holdEl(page, '#nav-walk', 2500);
+      await sleep(400);
+      s = await NS(page);
+      const moved = Math.hypot(s.g.pos.x - pos0.x, s.g.pos.y - pos0.y);
+      r[tag].walk = { steps: s.g.steps, moved, overlay: s.overlay };
+      check('nav', `${tag}: hold to walk moves the position marker`, s.g.steps >= 3 && moved > 1.5, { steps: s.g.steps, movedM: +moved.toFixed(2) });
+      check('nav', `${tag}: no camera -> simulated eyepiece view with the way-out marker`, s.simView && s.overlay && s.overlay.kind === 'edge' && /EXIT/.test(s.overlay.label), s.overlay);
+      check('nav', `${tag}: navigation replaces Mark way out while it runs`, s.markDisabled && /Navigation is on/.test(s.hint) && /^Navigation:/.test(s.sExit), { markDisabled: s.markDisabled, sExit: s.sExit });
+      if (!dark) await navShot(page, 'nav_mobile_demo_walk.png', true);
+      // turn around (hold Right) until facing the door: EXIT box in the simulated view
+      await page.evaluate(() => window.PSCamera.nav.turn(180));
+      await sleep(1500);
+      s = await NS(page);
+      r[tag].facing = s.overlay;
+      const boxG = s.overlay && s.overlay.rect ? await greenIn(page, { x: s.overlay.rect.x - 3, y: s.overlay.rect.y - 3, w: s.overlay.rect.w + 6, h: s.overlay.rect.h + 6 }) : 0;
+      check('nav', `${tag}: facing the way out -> green EXIT box sized by distance`, s.overlay && s.overlay.kind === 'box' && /^EXIT \dM/.test(s.overlay.label) && boxG > 30, { overlay: s.overlay, greenPx: boxG });
+      if (!dark) await navShot(page, 'nav_mobile_sim_exit_box.png');
+      // Guide me out: arrow + device phrase in the log and the voice
+      await page.evaluate(() => window.PSCamera.nav.turn(180));
+      await sleep(800);
+      await page.click('#nav-out');
+      await sleep(600);
+      s = await NS(page);
+      const arrowPx = await page.evaluate(() => {
+        const c = document.getElementById('nav-arrow'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 200 && d[i] < 120 && d[i + 2] < 150) n++;
+        return n;
+      });
+      r[tag].guide = { log: s.log.slice(0, 4), spoken: s.spoken, say: s.say, arrowPx };
+      check('nav', `${tag}: Guide me out shows the arrow (green ring + arrow on the widget)`, arrowPx > 500 && /^Way out is/.test(s.say), { arrowPx, say: s.say });
+      check('nav', `${tag}: voice log and speech get "Way out is ..."`, s.log.some((t) => /^Way out is /.test(t)) && s.spoken.some((t) => /^Way out is /.test(t)), { log: s.log.slice(0, 4), spoken: s.spoken });
+      await page.waitForFunction(() => window.PSCamera.nav.walker.phase === 'done', null, { timeout: 60000 });
+      s = await NS(page);
+      r[tag].guideResult = s.walker.result;
+      check('nav', `${tag}: the demo walker follows the arrow back to the door`, s.walker.result && s.walker.result.doorErrorM < 2.5, s.walker.result);
+      check('nav', `${tag}: 390 px: no horizontal scroll`, s.overflow <= 0, s.overflow);
+      const small = await smallTargets(page);
+      check('nav', `${tag}: 390 px: every visible button at least 44 px tall`, small.length === 0, small);
+      await navShot(page, `nav_mobile_${tag}.png`, true);
+      // Auto demo at 8x: walk in, look around, ask, walk out; an EXIT box appears on the way out
+      await page.click('#nav-auto');
+      for (let i = 0; i < 4 && !/8x/.test(await page.textContent('#nav-speed')); i++) await page.click('#nav-speed');   // 1x, 2x, 4x, 8x
+      const kinds = {};
+      const t0 = Date.now();
+      let shotTaken = false;
+      while (Date.now() - t0 < 90000) {
+        s = await NS(page);
+        if (s.overlay) kinds[s.overlay.kind] = (kinds[s.overlay.kind] || 0) + 1;
+        if (!dark && !shotTaken && s.walker.phase === 'outbound' && s.overlay && s.overlay.kind === 'box') { await navShot(page, 'nav_mobile_auto_demo_exit.png'); shotTaken = true; }
+        if (s.walker.phase === 'done') break;
+        await sleep(150);
+      }
+      r[tag].auto = { result: s.walker.result, kinds, seconds: (Date.now() - t0) / 1000, log: s.log.slice(0, 8) };
+      check('nav', `${tag}: auto demo (8x) walks in and back out; EXIT box shown on the way out`, s.walker.phase === 'done' && s.walker.result.doorErrorM < 2.5 && kinds.box > 0, r[tag].auto);
+      if (!dark) await navShot(page, 'nav_mobile_auto_demo_done.png', true);
+      // Stop: navigation off, Mark way out back (no camera: stays disabled, the hint is back)
+      await page.click('#nav-stop');
+      await sleep(300);
+      s = await NS(page);
+      check('nav', `${tag}: Stop ends navigation; the camera's mark hint returns`, !s.on && !s.simView && /^Mark way out/.test(s.hint), { on: s.on, hint: s.hint });
+      check('nav', `${tag}: no errors, no network, no dialogs`, !rec.external.length && !rec.errors.length && !(await page.evaluate(() => window.__dialogs)), rec);
+      await ctx.close();
+    }
+  } finally { await browser.close(); }
+  return r;
+};
+
+// With a camera: demo walk drawn over the camera picture, the camera-turn tracker as the heading,
+// DEGRADED / UNRELIABLE styles, eyepiece ring, Mark way out before / during / after navigation.
+SCN.navcam = async () => {
+  const r = {};
+  {   // still camera, demo walk: EXIT box in the camera picture when the walker faces the way out
+    const browser = await launch('still_fire');
+    const { page, rec } = await newPage(browser, { viewport: { width: 1280, height: 900 } });
+    try {
+      await page.goto('file://' + DIST);
+      await page.click('#start');
+      await page.waitForFunction(() => window.PSCamera.state.src && window.PSCamera.state.src.kind === 'camera', null, { timeout: 30000 });
+      await page.click('#voice');
+      // Mark way out works while navigation is off
+      await page.click('#mark');
+      await sleep(400);
+      let s = await NS(page);
+      check('navcam', 'Mark way out works with navigation off', s.mark && !s.markDisabled && /^Way out marked/.test(s.log[0]), s.log.slice(0, 2));
+      await page.click('#nav-demo');
+      await holdEl(page, '#nav-walk', 2500);
+      await page.evaluate(() => window.PSCamera.nav.turn(180));
+      await sleep(1500);
+      s = await NS(page);
+      const rc = s.overlay && s.overlay.rect;
+      const gp = rc ? await greenIn(page, { x: rc.x - 3, y: rc.y - 3, w: rc.w + 6, h: rc.h + 6 }) : 0;
+      r.demoCamera = { overlay: s.overlay, greenPx: gp, markKept: s.mark, markDisabled: s.markDisabled };
+      check('navcam', 'demo walk + camera: facing the way out -> green EXIT box in the camera picture', s.overlay && s.overlay.kind === 'box' && gp > 30, r.demoCamera);
+      check('navcam', 'while navigation runs the mark is paused, not lost; Mark way out disabled', s.mark && s.markDisabled, { mark: s.mark, markDisabled: s.markDisabled });
+      await navShot(page, 'nav_desktop_camera_exit_box.png');
+      // eyepiece: the device ring, top centre
+      await page.click('#eyepiece');
+      await sleep(1200);
+      const ring = await page.evaluate(() => {
+        const st = window.PSCamera.state, f = st.fit, c = document.getElementById('view'), k = f.h / 240;
+        const d = c.getContext('2d').getImageData(Math.round(f.x + f.w / 2 - 30 * k), Math.round(f.y + 4 * k), Math.round(60 * k), Math.round(56 * k)).data;
+        let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 200 && d[i] < 120 && d[i + 2] < 150) n++;
+        return n;
+      });
+      check('navcam', 'eyepiece view: device-style navigation ring and arrow at the top centre', ring > 100, ring);
+      await navShot(page, 'nav_desktop_eyepiece.png');
+      await page.click('#eyepiece');
+      // DEGRADED style: shrink the device's confidence scale (confidence = 1 / (1 + (sigma / scale)^2))
+      // so the confidence drops to ~0.5 (DEGRADED < 0.6), then ~0.2 (UNRELIABLE < 0.3)
+      const scale0 = await page.evaluate(() => window.PSCamera.nav.core.getCfg('navConfScaleM'));
+      await page.evaluate(() => { const n = window.PSCamera.nav; n.core.setCfg('navConfScaleM', n.g.posSigmaM / 1.0); });
+      await sleep(1200);
+      s = await NS(page);
+      r.degraded = s.overlay;
+      check('navcam', 'DEGRADED: dashed "EXIT? nM" marker (confidence lowered for the test)', s.g.level === 'DEGRADED' && s.overlay && /^EXIT\? \dM/.test(s.overlay.label) && s.overlay.unsure, { level: s.g.level, overlay: s.overlay });
+      await navShot(page, 'nav_desktop_degraded.png');
+      await page.evaluate(() => { const n = window.PSCamera.nav; n.core.setCfg('navConfScaleM', n.g.posSigmaM / 2.2); });
+      await sleep(1500);
+      s = await NS(page);
+      r.unreliable = { overlay: s.overlay, log: s.log.slice(0, 3) };
+      check('navcam', 'UNRELIABLE: no box, FOLLOW HOSE, spoken "Follow the hose line out"', s.g.level === 'UNRELIABLE' && s.overlay.kind === 'hose' && s.log.some((t) => /Follow the hose line out/.test(t)), r.unreliable);
+      await navShot(page, 'nav_desktop_follow_hose.png');
+      await page.evaluate((v) => { window.PSCamera.nav.core.setCfg('navConfScaleM', v); }, scale0);
+      // Stop: the mark comes back
+      await page.click('#nav-stop');
+      await sleep(600);
+      s = await NS(page);
+      check('navcam', 'after Stop the mark is back and Mark way out works again', s.mark && !s.markDisabled && !s.overlay && /^(In view|\d+°)/.test(s.sExit), { sExit: s.sExit, markDisabled: s.markDisabled });
+      check('navcam', 'no errors, no network (demo + camera)', !rec.external.length && !rec.errors.length, rec);
+    } finally { await browser.close(); }
+  }
+  {   // front (mirrored) camera, camera-turn heading: the way out behind the viewer is in its picture
+    const browser = await launch('still_fire');
+    const { page, rec } = await newPage(browser, { viewport: { width: 390, height: 844 }, dpr: 2, mobile: true });
+    try {
+      await page.goto('file://' + DIST + '?mirror=1');
+      await page.click('#start');
+      await page.waitForFunction(() => window.PSCamera.state.src && window.PSCamera.state.src.kind === 'camera', null, { timeout: 30000 });
+      await page.click('#nav-start');
+      await page.waitForFunction(() => window.PSCamera.nav.input.mode === 'camera' && window.PSCamera.nav.g.valid, null, { timeout: 15000 });
+      let s = await NS(page);
+      r.cameraMode = { inLabel: s.inLabel, detail: s.input.detail };
+      check('navcam', 'no motion sensors but a camera -> camera turn heading + Walk button, entry marked', /Camera turn/.test(s.inLabel) && s.g.valid, r.cameraMode);
+      await holdEl(page, '#nav-walk', 2500);
+      await sleep(800);
+      s = await NS(page);
+      r.cameraMode.after = { steps: s.g.steps, overlay: s.overlay, word: s.g.word };
+      check('navcam', 'front camera, walked forward: the way out (behind you) shows as an EXIT box in its picture', s.g.steps >= 3 && s.overlay && s.overlay.kind === 'box', r.cameraMode.after);
+      await navShot(page, 'nav_mobile_front_camera_exit.png');
+      check('navcam', 'no errors, no network (camera heading)', !rec.external.length && !rec.errors.length, rec);
+    } finally { await browser.close(); }
+  }
+  {   // panning clip: the navigation heading follows the camera-turn tracker
+    const browser = await launch('pan');
+    const { page, rec } = await newPage(browser);
+    try {
+      await page.goto('file://' + DIST + '?mirror=0');
+      await page.click('#start');
+      await waitInf(page, 1);
+      await page.click('#nav-start');
+      await page.waitForFunction(() => window.PSCamera.nav.input.mode === 'camera' && window.PSCamera.nav.g.valid, null, { timeout: 15000 });
+      const rows = [];
+      const t0 = Date.now();
+      while (Date.now() - t0 < 16000) {
+        rows.push(await page.evaluate(() => ({ nav: window.PSCamera.nav.g.yaw * 180 / Math.PI, trk: window.PSCamera.tracker.pose.yaw, st: window.PSCamera.tracker.state })));
+        await sleep(100);
+      }
+      const ok = rows.filter((x) => x.st === 'ok');
+      const navs = ok.map((x) => x.nav), span = Math.max(...navs) - Math.min(...navs);
+      // nav yaw (counter-clockwise) = -(tracker yaw, clockwise) + const
+      const c = ok.length ? ok[0].nav + ok[0].trk : 0;
+      const err = ok.map((x) => Math.abs(((x.nav - (c - x.trk)) + 540) % 360 - 180));
+      r.pan = { samples: rows.length, okSamples: ok.length, spanDeg: +span.toFixed(1), maxErrDeg: +Math.max(...err).toFixed(2), medianErrDeg: +median(err).toFixed(2) };
+      check('navcam', 'camera-turn heading: navigation turns with the camera (120 degree pan)', span > 90 && median(err) < 3, r.pan);
+      check('navcam', 'no errors, no network (pan)', !rec.external.length && !rec.errors.length, rec);
+    } finally { await browser.close(); }
+  }
+  return r;
+};
+
 (async () => {
-  const names = (process.env.ONLY || 'desktop,mobile,cpu,pan,firedoor,upload,denied,csp,switch,sensor').split(',');
+  const names = (process.env.ONLY || 'desktop,mobile,cpu,pan,firedoor,upload,denied,csp,switch,sensor,nav,navcam').split(',');
   const results = {};
   for (const n of names) {
     const t0 = Date.now();

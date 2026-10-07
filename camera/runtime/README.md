@@ -21,6 +21,27 @@ runtime/
 
 ## Page integration (exact interface)
 
+The camera page no longer calls these from its own thread by default: `engine.js` (global
+`PSEngine`) wraps `PSPeople` and the fire/door op-list model into one engine
+(`PSEngine.create({tf, coop, budgetMs, fdDetector})` -> `init`, `detect`, `reset`, `gpuLost`,
+`dispose`, `info`) that `page/app.js` runs in a Web Worker (`PSEngine.serveWorker`, protocol in
+the header of `engine.js`) or, as fallback, on the page with `coop: true`. Cooperative mode uses
+the async variants added for it, all bit-exact with the synchronous ones (checked in node, TF.js
+CPU, no tensor left over):
+
+* `PSOpList.loadAsync(json, weights, {tf, yieldFn})`, `PSOpList.loadEmbeddedAsync(asset,
+  {tf, yieldFn})` (asset = `{json, weightsB64}`), `PSOpList.base64ToArrayBufferAsync(b64,
+  yieldFn)`; `model.runAsync(inputs, {outputs, yieldFn})` runs op by op (each op in its own
+  `tf.tidy`, tensors freed at their last use);
+* `PSPeople.init(tf, assets, {yieldFn, warmup: [H, W], ...})`: decodes the weights in slices,
+  warms up at the page's frame size, runs the person model as 330 stages
+  (`PSPeople.personStages`) and the face model op by op; `PSPeople.setupBackend` gives up on a
+  WebGL sanity check after 15 s and, in a worker, keeps WebGL2 on the `OffscreenCanvas`.
+* `PSEngine.makeYielder(budgetMs)` returns the `yieldFn`: after `budgetMs` of work it yields a
+  `MessageChannel` turn, and at least every 50 ms a full frame (`requestAnimationFrame` + task).
+
+Direct use (node, tests, other pages) is unchanged:
+
 Inline, in this order, as plain `<script>` blocks (none contains `</script`):
 
 1. `camera/node_modules/@tensorflow/tfjs/dist/tf.min.js` (TF.js 4.22.0, global `tf`; contains the WebGL and CPU backends only, no wasm)

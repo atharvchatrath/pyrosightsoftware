@@ -28,14 +28,17 @@
  "pages": [
   {
    "file": "dist/pyrosight_camera.html",
-   "bytes": 8229516,
-   "mb": 8.23,
-   "sha256": "8e6fdfbcf80679effb47f65c6bce594a2f5a58559cee01968971c22f2d888439",
+   "bytes": 8525622,
+   "mb": 8.526,
+   "sha256": "248155ffea4d31eec48bb5bf25f984c8ea859c8d2d108777239cd9a4a05d7455",
    "title_ok": true,
    "parts": [
     "ps-app",
+    "ps-engine",
     "ps-firedoor",
+    "ps-firedoor-model",
     "ps-motion",
+    "ps-nav",
     "ps-oplist",
     "ps-people",
     "ps-people-assets",
@@ -43,13 +46,22 @@
     "ps-tf"
    ],
    "problems": [],
+   "main_thread_script_bytes": {
+    "ps-oplist": 18793,
+    "ps-people": 26274,
+    "ps-firedoor": 5388,
+    "ps-engine": 21866,
+    "ps-motion": 31414,
+    "ps-app": 117325,
+    "ps-nav": 202398
+   },
    "tfjs_http_strings": [
+    "http://",
     "http://a",
-    "http://a#\u0431",
+    "http://a#",
     "http://a/c%20d?a=1&c=3",
     "http://www.apache.org/licenses/LICENSE-2.0",
     "http://x",
-    "http://\u0442\u0435\u0441\u0442",
     "https://a@b",
     "https://arxiv.org/abs/1706.02515",
     "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
@@ -65,14 +77,17 @@
   },
   {
    "file": "dist/pyrosight_camera.fragment.html",
-   "bytes": 8229383,
-   "mb": 8.229,
-   "sha256": "56f4c33a29aef0bb174a354cc9c98e36162cbbd7783e34aec9b5f2e91e30f5c8",
+   "bytes": 8525489,
+   "mb": 8.525,
+   "sha256": "3851640b33701837c812046d7df8eeb0c4d99ef85c694e5abc1cb99f003100eb",
    "title_ok": true,
    "parts": [
     "ps-app",
+    "ps-engine",
     "ps-firedoor",
+    "ps-firedoor-model",
     "ps-motion",
+    "ps-nav",
     "ps-oplist",
     "ps-people",
     "ps-people-assets",
@@ -80,13 +95,22 @@
     "ps-tf"
    ],
    "problems": [],
+   "main_thread_script_bytes": {
+    "ps-oplist": 18793,
+    "ps-people": 26274,
+    "ps-firedoor": 5388,
+    "ps-engine": 21866,
+    "ps-motion": 31414,
+    "ps-app": 117325,
+    "ps-nav": 202398
+   },
    "tfjs_http_strings": [
+    "http://",
     "http://a",
-    "http://a#\u0431",
+    "http://a#",
     "http://a/c%20d?a=1&c=3",
     "http://www.apache.org/licenses/LICENSE-2.0",
     "http://x",
-    "http://\u0442\u0435\u0441\u0442",
     "https://a@b",
     "https://arxiv.org/abs/1706.02515",
     "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
@@ -103,18 +127,21 @@
  ],
  "page_build": {
   "files": {
-   "pyrosight_camera.html": 8229516,
-   "pyrosight_camera.fragment.html": 8229383
+   "pyrosight_camera.html": 8525622,
+   "pyrosight_camera.fragment.html": 8525489
   },
   "parts": {
-   "SHELL": 15257,
+   "SHELL": 23936,
    "TFJS": 1469867,
-   "OPLIST": 14361,
-   "PEOPLE": 20430,
+   "OPLIST": 18793,
+   "PEOPLE": 26274,
    "PEOPLE_ASSETS": 5156727,
-   "FIREDOOR": 1431558,
+   "FIREDOOR": 5388,
+   "ENGINE": 21866,
    "MOTION": 31414,
-   "APP": 76847
+   "APP": 117134,
+   "NAV": 202394,
+   "FIREDOOR_MODEL": 1426170
   },
   "firedoor_included": true,
   "firedoor_source": "/home/claude/pyrosight/camera/build/firedoor/firedoor"

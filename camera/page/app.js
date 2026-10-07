@@ -1,17 +1,23 @@
 /*
- * PyroSight Camera: page logic (app.js). Inlined last, after tf.min.js,
- * oplist.js (PSOpList), people.js (PSPeople), people_assets.js, the optional
- * fire/door model and motion.js (PSMotion). See README.md.
+ * PyroSight Camera: page logic (app.js). Runs early (only the page shell, oplist.js, people.js,
+ * the fire/door decoder, engine.js and motion.js come before it); TF.js and the models are kept
+ * as text (<script type="text/plain">) and run in a Web Worker, so this thread only draws, tracks
+ * camera turns, speaks and answers taps. See README.md and "Detection engine" below.
  *
  * Boxes (same colours as core/include/pyrosight/ps_display.h):
  *   person  WHITE  #FFFFFF  label = distance estimate, device style ("1.2M")
  *   fire    PURPLE #C850FF  "FIRE"
- *   exit    GREEN  #28FF50  "DOOR" (fire/door model) and "EXIT" (the viewer's mark)
+ *   exit    GREEN  #28FF50  "DOOR" (fire/door model) and "EXIT" (the viewer's mark, or the
+ *                           navigation's estimate while Navigation runs: "EXIT 5M")
  *
- * Fire/door detector interface (injectable). The page uses, in order:
- *   1. globalThis.PS_FIREDOOR_DETECTOR, if a script before this one set it;
+ * Navigation (demo): the eyepiece's own way-out code (camera/nav, global PSNav, inlined right
+ * after this script); see "navigation (demo)" below.
+ *
+ * Fire/door detector interface (injectable). The engine (runtime/engine.js) uses, in order:
+ *   1. globalThis.PS_FIREDOOR_DETECTOR, if a script before this one set it (this runs the
+ *      detectors on the main thread, where that detector lives);
  *   2. an adapter around PS_OPLIST_ASSETS.firedoor + FireDoorDecode, if both exist;
- *   3. the STUB below (finds nothing), clearly reported as such on the page.
+ *   3. a STUB (finds nothing), clearly reported as such on the page.
  * A detector is {name, stub?, credits?, init(tf) -> Promise, detect(pixels) ->
  * Promise<[{cls: 'fire'|'door', score, x, y, w, h}]>, dispose()}; pixels is a
  * tf.Tensor3D [H, W, 3] RGB 0..255 that the detector must NOT dispose; boxes are
@@ -52,6 +58,7 @@
   const state = {
     backend: null, backendInfo: null, modelsReady: false, loadError: null, loadMs: 0,
     fd: null, fdReady: false, fdError: null,
+    engine: null, engineMode: null, engineStage: null, engineInfo: null, workerError: null, workerTimes: null, numTensors: null, lastBusyMs: 0,
     src: null,              // {kind: 'camera'|'video'|'image', el, w, h, mirror, live, name}
     stream: null, devices: [], facing: null, mirrorOverride: qs.get('mirror'),
     busy: false, results: null, lastPersons: null, cycle: 0, lastInferEnd: 0, lastInferVideoTime: -1,
@@ -61,14 +68,26 @@
     exitSector: null, exitSectorSince: 0, lastExitSay: -1e9,
     al: {}, log: [], spoken: new Map(),
     dpr: 1, fit: null,
-    lastVideoTime: -1, lastTrackT: 0, newFrame: false,
+    lastVideoTime: -1, lastTrackT: 0, trackMs: 0, newFrame: false,
     fpsCount: 0, fpsT0: 0, fps: 0, ups: 0, upsTimes: [],
     lastStatusT: 0, startT: performance.now(),
     camReq: 0, camPending: false, camMuted: false,
     inferGen: 0, inferT0: 0, recovering: false, gpuLosses: 0, stalls: 0, lastCheckT: 0,
+    incidentStreak: 0,      // graphics resets / stalls with no completed WebGL run in between (3 -> CPU)
+    runsSinceStart: 0,      // completed runs since the detectors were (re)started
+    lastRecovery: null, paused: false, slowSaid: false, trackAfterT: 0,
     stats: { inferences: 0, tensors: [], ms: [], errors: [], trackStates: {}, labels: [], recoveries: [] },
   };
+  // navigation (demo), see "navigation (demo)" below
+  const navUi = {
+    nav: null, on: false, pending: false, map: null, arrow: null, visible: true, dirty: true,
+    lastArrowT: -1e9, lastMapT: -1e9, lastTextT: -1e9, arrowKey: '', mapKey: '', lastMapDrawT: -1e9,
+    unbindKeys: null, overlay: null, simShown: false, note: '',
+    yawEpoch: -1, yawOffset: 0, lastFedYaw: null, lastFeedT: -1e9, asked: -1e9, speedIdx: 1,
+  };
   const tracker = new M.MotionTracker({ fovDeg: FOV });
+  let trackerEpoch = 0;             // bumped on every tracker reset (navigation keeps its heading continuous)
+  function resetTracker() { tracker.reset(); trackerEpoch++; }
 
   const view = $('view');
   const g = view.getContext('2d');
@@ -83,158 +102,328 @@
   let eyeLo = 0, eyeHi = 255, eyeFrameKey = null;
   const grey = new Float32Array(tracker.o.n * tracker.o.n);
 
-  // ------------------------------------------------------------ fire / door
-  const FIREDOOR_STUB = {
-    name: 'Stub: no fire/door model in this build',
-    stub: true,
-    credits: '',
-    init: async () => ({}),
-    detect: async () => [],          // STUB: always finds nothing
-    dispose() {},
-  };
+  // ------------------------------------------------------------ detection engine
+  // Normal case: the three detectors run in a dedicated Web Worker built from this page's own script
+  // texts (a Blob URL: no network), with TF.js on WebGL (OffscreenCanvas) or, failing that, its CPU
+  // backend. One frame in flight at a time, sent as transferred RGBA pixels; plain boxes come back.
+  // Fallback, when the worker cannot be made or does not start (a Content-Security-Policy without
+  // blob: workers, no Worker/OffscreenCanvas, a custom fire/door detector): TF.js and the models are
+  // run on this thread after the first paint, one script per turn (blob: scripts, which the browser
+  // compiles off this thread, else inline scripts), and the detectors give the event
+  // loop a turn every ~30 ms (op by op; the person graph in short stages), with an idle gap after
+  // each update. Switch for tests: ?engine=main or #engine=main (or window.PS_ENGINE = 'main' set
+  // before this script) forces the fallback; 'worker' forbids it.
+  const FIREDOOR_STUB = window.PSEngine ? window.PSEngine.FIREDOOR_STUB : { name: 'Stub: no fire/door model in this build', stub: true, credits: '', init: async () => ({}), detect: async () => [], dispose() {} };
+  const ENGINE_PARTS = ['ps-tf', 'ps-oplist', 'ps-people', 'ps-people-assets', 'ps-firedoor-model', 'ps-firedoor', 'ps-engine'];
+  const HEAVY_PARTS = ['ps-tf', 'ps-people-assets', 'ps-firedoor-model'];     // kept as text unless the fallback runs here
+  const APP_NONCE = (document.currentScript && document.currentScript.nonce) || '';
+  const MAIN_IDLE_MS = 120;          // fallback: at least this long between two updates (taps, frames)
+  // turn tracker: at most this share of this thread; its cost estimate starts slightly pessimistic,
+  // rises at once (a slow phone's first runs were measured at 85 ms) and falls slowly; longest gap
+  // 200 ms: with 500 ms gaps or a 40 ms start a 120-degree pan lost lock in 2 of 3 browser_test runs
+  const TRACK_SHARE = 0.3, TRACK_MAX_GAP_MS = 200, TRACK_START_MS = 15, TRACK_SETTLE_MS = 400;
+  let customFd = null;               // PSCamera.setFireDoorDetector() / PS_FIREDOOR_DETECTOR (main thread)
 
-  function fireDoorAdapter() {
-    const asset = window.PS_OPLIST_ASSETS && window.PS_OPLIST_ASSETS.firedoor;
-    const dec = window.FireDoorDecode;
-    if (!asset || !dec || !window.PSOpList) return null;
-    const meta = window.PS_FIREDOOR_META || {};
-    let model = null, layout = 'NCHW', inH = 256, inW = 320;
-    // FIRE hysteresis (firedoor/MODEL.md): a box turns on at score >= on and stays on while a
-    // fire box overlapping the one shown last time scores >= keep. It holds real fires whose score
-    // flickers around 0.5 (CCTV clip: FIRE in 34 of 37 updates instead of 29), and it equally holds
-    // a false FIRE once one starts: on a deliberately fire-like clip (sunsets, LEDs, lamps) FIRE was
-    // shown 41 % longer (38 instead of 27 of 76 updates), in fewer, longer episodes (9 instead of 15).
-    const hy = meta.hysteresis || null;
-    // Centre zoom pass (meta.zoom = {frac, on}): the model sees the middle frac x frac of the frame
-    // at full input size as well, so a lighter or candle flame 2-3 % of the frame wide (under one
-    // heat-map cell of the whole-frame pass) is found more often: on 180 held-out small-flame
-    // frames 2 %: 8 -> 18 of 30, 3 %: 16 -> 24 of 30. Its boxes need zoom.on (stricter than the
-    // whole-frame on) because the zoomed picture also magnifies lamps and LEDs: false FIRE on 871
-    // Open Images non-fire photos 17 -> 24. Implemented by lowering zoom-pass scores by
-    // (zoom.on - on), so the hysteresis and overlap rules below treat both passes alike.
-    // Cost: a second model run. When one run is slow (over 200 ms, e.g. software WebGL here: 0.4 s,
-    // which made an update 2.3 s instead of 1.8 s) the centre pass runs on every second update and
-    // its boxes are reused once in between; on a fast GPU it runs on every update. They are reused
-    // only while the centre still looks the same (a 16 x 12 grey thumbnail, mean removed, differs by
-    // under THUMB_MAX grey levels on average): a cut or a turn drops them. Measured over 2 s gaps:
-    // still photos with 8 px drift 8-13, a real CCTV fire video 10-17, cuts between photos 37-44.
-    const zoom = meta.zoom || null;
-    let prevZoom = null, passTimes = [], zoomTurn = 0;
-    const THUMB_MAX = 25;
-    async function thumb(px, y0, x0, ch, cw) {
-      const fh = Math.max(1, Math.floor(ch / 12)), fw = Math.max(1, Math.floor(cw / 16));
-      const t = tf.tidy(() => tf.avgPool(tf.mean(tf.cast(tf.slice(px, [y0, x0, 0], [12 * fh, 16 * fw, 3]), 'float32'), 2, true).expandDims(0), [fh, fw], [fh, fw], 'valid'));
-      try {
-        const d = await t.data();
-        let m = 0; for (let i = 0; i < d.length; i++) m += d[i];
-        m /= d.length;
-        return Float32Array.from(d, (v) => v - m);
-      } finally { t.dispose(); }
-    }
-    const thumbDiff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
-    let prevFire = [], prevT = 0;
-    function hysteresis(dets) {
-      const now = performance.now();
-      const recent = now - prevT <= (hy.maxGapMs || 3000) ? prevFire : [];
-      const out = dets.filter((d) => d.cls !== 'fire' || d.score >= hy.on ||
-        (d.score >= hy.keep && recent.some((p) => iou(p, d) >= (hy.iou || 0.1))));
-      prevFire = out.filter((d) => d.cls === 'fire');
-      prevT = now;
-      return out;
-    }
-    // one model run: like the training preprocessing (whole picture stretched to inW x inH,
-    // OpenCV INTER_AREA, x / 127.5 - 1): bilinear to 2x then 2x2 average
-    async function pass(px, thresholds) {
-      const x = tf.tidy(() => {
-        let r = tf.cast(px, 'float32').expandDims(0);
-        r = tf.image.resizeBilinear(r, [2 * inH, 2 * inW], false, true);
-        r = tf.avgPool(r, 2, 2, 'valid');
-        return tf.sub(tf.div(r, 127.5), 1);
-      });
-      const out = model.run(x);
-      x.dispose();
-      try {
-        const [heat, wh, off] = await Promise.all([out.heat.data(), out.wh.data(), out.off.data()]);
-        const o = Object.assign({ layout, inW, inH, gridW: inW / 8, gridH: inH / 8 }, meta.decode || {});
-        o.thresholds = Object.assign({}, o.thresholds || {}, thresholds);
-        return dec.decode(heat, wh, off, o);
-      } finally {
-        tf.dispose(Object.values(out));
-      }
-    }
-    const inside = (a, b) => { const cx = a.x + a.w / 2, cy = a.y + a.h / 2; return cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h; };
-    return {
-      name: meta.name || 'FireDoorNet',
-      stub: false,
-      credits: meta.credits || '',
-      hysteresis: hy,
-      reset() { prevFire = []; prevT = 0; prevZoom = null; zoomTurn = 0; },
-      async init(tfRef) {
-        model = window.PSOpList.loadEmbedded(asset, { tf: tfRef });
-        const s = model.inputs[0].shape;          // [1, H, W, 3]
-        inH = s[1]; inW = s[2];
-        layout = model.outputs[0].layout === 'nhwc' ? 'NHWC' : 'NCHW';
-        const z = tf.zeros([inH, inW, 3]);
-        await this.detect(z);
-        z.dispose();
-        passTimes = [];   // the warm-up run compiles shaders: not a speed sample
-      },
-      // opts.zoom: false skips the centre pass (the last centre-pass boxes are then used once more),
-      // 'auto' runs it on every update, or every second update when one model run is slow;
-      // anything else (true, or no opts) runs it
-      async detect(px, opts) {
-        const base = meta.decode && meta.decode.thresholds || {};
-        const fireMin = hy ? Math.min(hy.keep, hy.on) : (base.fire === undefined ? 0.5 : base.fire);
-        const t0 = performance.now();
-        let dets = await pass(px, Object.assign({}, base, { fire: fireMin }));
-        passTimes = passTimes.concat(performance.now() - t0).slice(-5);
-        const passMs = passTimes.slice().sort((a, b) => a - b)[passTimes.length >> 1];   // median: shader compiles spike
-        if (zoom) {
-          let zd = null;
-          const want = opts ? opts.zoom : true;
-          const runZoom = want === 'auto' ? (passMs <= 200 || zoomTurn++ % 2 === 0) : want !== false;
-          const H = px.shape[0], W = px.shape[1];
-          const ch = Math.max(1, Math.round(H * zoom.frac)), cw = Math.max(1, Math.round(W * zoom.frac));
-          const y0 = Math.round((H - ch) / 2), x0 = Math.round((W - cw) / 2);
-          if (runZoom) {
-            const lift = zoom.on - (hy ? hy.on : fireMin);
-            const crop = tf.slice(px, [y0, x0, 0], [ch, cw, 3]);
-            try {
-              zd = (await pass(crop, { fire: fireMin + lift, door: 2 })).filter((d) => d.cls === 'fire').map((d) => Object.assign(d, {
-                x: (x0 + d.x * cw) / W, y: (y0 + d.y * ch) / H, w: d.w * cw / W, h: d.h * ch / H,
-                rawScore: d.score, score: d.score - lift, zoom: true }));
-            } finally { crop.dispose(); }
-            prevZoom = { dets: zd, t: performance.now(), W, H, thumb: zd.length && ch >= 12 && cw >= 16 ? await thumb(px, y0, x0, ch, cw) : null };
-          } else if (prevZoom && prevZoom.thumb && prevZoom.W === W && prevZoom.H === H && performance.now() - prevZoom.t < 10000) {
-            const same = thumbDiff(await thumb(px, y0, x0, ch, cw), prevZoom.thumb) < THUMB_MAX;
-            if (same) zd = prevZoom.dets.map((d) => Object.assign({}, d, { carried: true }));
-            prevZoom = null;
-          } else prevZoom = null;
-          if (zd && zd.length) {
-            // one box per fire: where the passes overlap keep the stronger (after the lift)
-            const all = dets.concat(zd).sort((a, b) => b.score - a.score), keep = [];
-            for (const d of all) {
-              if (d.cls === 'fire' && keep.some((k) => k.cls === 'fire' && (iou(k, d) >= 0.3 || inside(d, k) || inside(k, d)))) continue;
-              keep.push(d);
-            }
-            dets = keep;
-          }
+  function enginePref() {
+    let h = '';
+    try { h = (location.hash.match(/engine=(main|worker)/) || [])[1] || ''; } catch (e) { /* no location */ }
+    const v = window.PS_ENGINE || qs.get('engine') || h;
+    return v === 'main' || v === 'worker' ? v : 'auto';
+  }
+
+  // a turn of the event loop for this thread's own setup work (not the detectors)
+  const turn = () => new Promise((r) => { const ch = new MessageChannel(); ch.port1.onmessage = () => r(); ch.port2.postMessage(0); });
+  const afterPaint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+  // the model scripts come after this one in the page: wait until the parser has read all of them
+  const domReady = () => new Promise((r) => {
+    if (document.readyState !== 'loading') r();
+    else document.addEventListener('DOMContentLoaded', () => r(), { once: true });
+  });
+
+  // A part's text: TF.js and the models come split over several elements (#id, then
+  // script[data-ps-of=id]) so the HTML parser can pause between them.
+  function partTexts(id) {
+    const el = $(id);
+    if (!el) return null;
+    const out = [el.textContent];
+    document.querySelectorAll('script[data-ps-of="' + id + '"]').forEach((c) => out.push(c.textContent));
+    return out;
+  }
+
+  // The worker's script: the engine parts in order, joined in small slices (Blob of Blobs: nothing
+  // is copied twice), a turn of the event loop between slices and a rendered frame at least every
+  // 50 ms (MessageChannel turns alone let these tasks run back to back with no frame: a tap's
+  // visible response waited 397 ms at 4x CPU throttling).
+  let workerBlob = null;
+  async function makeWorkerBlob() {
+    if (workerBlob) return workerBlob;
+    const SLICE = 1 << 19;
+    const pause = window.PSEngine ? window.PSEngine.makeYielder(20) : null;
+    const step = () => (pause ? pause(true) : turn());
+    let blob = new Blob(['self.PS_ENGINE_WORKER = true;\n'], { type: 'text/javascript' });
+    for (const id of ENGINE_PARTS) {
+      const texts = partTexts(id);
+      if (!texts) continue;            // e.g. no fire/door model in a stub build
+      for (const text of texts) {
+        for (let i = 0; i < text.length;) {
+          let end = Math.min(text.length, i + SLICE);
+          const c = text.charCodeAt(end - 1);
+          if (end < text.length && c >= 0xD800 && c <= 0xDBFF) end--;     // never split a surrogate pair
+          blob = new Blob([blob, text.slice(i, end)], { type: 'text/javascript' });
+          i = end;
+          await step();
         }
-        return hy ? hysteresis(dets) : dets.filter((d) => d.cls !== 'fire' || d.score >= (base.fire === undefined ? 0.5 : base.fire));
+      }
+      blob = new Blob([blob, '\n;\n'], { type: 'text/javascript' });
+    }
+    workerBlob = blob;
+    return blob;
+  }
+
+  function workerClient() {
+    let w = null, seq = 0, readyInfo = null;
+    const pending = new Map();
+    // liveness: the worker posts a beat every second while its event loop runs; the longest silence
+    // seen while it was working (loading, detecting) sets how long a silence means it died or hangs
+    let lastMsgT = 0, maxGap = 0;
+    const rejectAll = (why) => { for (const p of pending.values()) p.reject(new Error(why)); pending.clear(); };
+    return {
+      mode: 'worker',
+      async start(opts, hooks) {
+        const t0 = performance.now();
+        const blob = await makeWorkerBlob();
+        const tBlob = performance.now();
+        const url = URL.createObjectURL(blob);
+        try { w = new Worker(url); } catch (e) { URL.revokeObjectURL(url); throw e; }   // CSP worker-src: SecurityError
+        lastMsgT = performance.now();
+        return new Promise((resolve, reject) => {
+          let booted = false, settled = false;
+          const fail = (why) => {
+            if (settled) return;
+            settled = true; clearTimeout(bootTimer); clearTimeout(initTimer);
+            try { w.terminate(); } catch (e) { /* ignore */ }
+            w = null;
+            try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+            reject(new Error(why));
+          };
+          const bootTimer = setTimeout(() => { if (!booted) fail('the detector worker did not start'); }, 20000);
+          const initTimer = setTimeout(() => fail('the detector worker did not get ready in 3 minutes'), 180000);
+          w.onerror = (e) => {
+            try { e.preventDefault(); } catch (x) { /* ignore */ }
+            if (!settled) fail('detector worker error: ' + ((e && e.message) || 'blocked'));
+            else { rejectAll('worker error'); if (hooks.onLost) hooks.onLost('crash'); }
+          };
+          w.onmessage = (ev) => {
+            const m = ev.data || {};
+            const tm = performance.now();
+            if (!readyInfo || pending.size) maxGap = Math.max(maxGap, tm - lastMsgT);
+            lastMsgT = tm;
+            if (m.type === 'beat') return;
+            if (m.type === 'boot') {
+              booted = true; clearTimeout(bootTimer);
+              state.workerTimes = { blobMs: Math.round(tBlob - t0), bootMs: Math.round(performance.now() - tBlob) };
+              try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+              w.postMessage({ type: 'init', opts });
+            } else if (m.type === 'backend') { if (hooks.onBackend) hooks.onBackend(m.info); }
+            else if (m.type === 'ready') { settled = true; clearTimeout(initTimer); readyInfo = m.info; resolve(m.info); }
+            else if (m.type === 'failed') fail(m.error || 'the detectors did not load in the worker');
+            else if (m.type === 'result' || m.type === 'error') {
+              const p = pending.get(m.id);
+              if (!p) return;
+              pending.delete(m.id);
+              if (m.type === 'result') p.resolve(m.res);
+              else p.reject(Object.assign(new Error(m.error), { lost: !!m.lost }));
+            } else if (m.type === 'lost') { if (hooks.onLost) hooks.onLost('event'); }
+          };
+        });
       },
-      dispose() { if (model) model.dispose(); model = null; },
+      detect(im, opts) {
+        if (!w || !readyInfo) return Promise.reject(new Error('detectors not ready'));
+        return new Promise((resolve, reject) => {
+          const id = ++seq;
+          pending.set(id, { resolve, reject });
+          w.postMessage({ type: 'detect', id, frame: { buf: im.data.buffer, w: im.width, h: im.height }, opts }, [im.data.buffer]);
+        });
+      },
+      reset() { if (w) w.postMessage({ type: 'reset' }); },
+      debug(what, ms) { if (w) w.postMessage({ type: 'debug', what, ms }); },
+      gpuLost() { return false; },      // the worker reports it ('lost')
+      progressAt: () => lastMsgT,
+      maxGap: () => maxGap,
+      terminate() { if (w) { try { w.terminate(); } catch (e) { /* ignore */ } } w = null; readyInfo = null; rejectAll('stopped'); },
     };
   }
 
-  async function setFireDoorDetector(det) {
-    if (state.fd && state.fd.dispose) { try { state.fd.dispose(); } catch (e) { /* ignore */ } }
-    state.fd = det || FIREDOOR_STUB;
-    state.fdReady = false; state.fdError = null;
-    if (state.modelsReady || state.backend) {
-      try { await state.fd.init(tf); state.fdReady = true; } catch (e) { state.fdError = e; state.fd = FIREDOOR_STUB; state.fdReady = true; }
+  // Fallback: run TF.js and the model scripts on this thread, one per turn. First as blob: scripts
+  // (the browser parses and compiles those off this thread while it streams them in, so only
+  // running them blocks here); where the host's CSP refuses blob: scripts, as inline scripts
+  // (they need only what inline scripts already need; a nonce, if the host uses one, is copied).
+  function runScriptText(text) {
+    const el = document.createElement('script');
+    if (APP_NONCE) el.nonce = APP_NONCE;
+    el.textContent = text;
+    (document.head || document.documentElement).appendChild(el);
+    el.remove();
+  }
+  function runBlobScript(texts) {
+    return new Promise((resolve) => {
+      let url = null;
+      try { url = URL.createObjectURL(new Blob(texts, { type: 'text/javascript' })); } catch (e) { resolve(false); return; }
+      const s = document.createElement('script');
+      s.async = true;
+      s.onload = () => { URL.revokeObjectURL(url); s.remove(); resolve(true); };
+      s.onerror = () => { URL.revokeObjectURL(url); s.remove(); resolve(false); };
+      if (APP_NONCE) s.nonce = APP_NONCE;
+      s.src = url;
+      (document.head || document.documentElement).appendChild(s);
+    });
+  }
+  // The fallback's TF.js / model scripts each block this thread while they run (0.3-0.5 s on a
+  // slow phone): start each one only after a second without taps or keys (at most 8 s of waiting).
+  let lastInputT = -1e9;
+  for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, () => { lastInputT = performance.now(); }, { capture: true, passive: true });
+  async function inputQuiet(ms, maxMs) {
+    const t0 = performance.now();
+    while (performance.now() - lastInputT < ms && performance.now() - t0 < maxMs) await new Promise((r) => setTimeout(r, 100));
+  }
+  async function runHeavyParts() {
+    const need = { 'ps-tf': () => !!window.tf, 'ps-people-assets': () => !!window.PS_PEOPLE_ASSETS,
+      'ps-firedoor-model': () => !!(window.PS_OPLIST_ASSETS && window.PS_OPLIST_ASSETS.firedoor) };
+    let blobOk = true;
+    for (const id of HEAVY_PARTS) {
+      const texts = partTexts(id);
+      if (!texts || need[id]()) continue;
+      await inputQuiet(1000, 8000);
+      await turn();
+      if (blobOk) blobOk = (await runBlobScript(texts)) && need[id]();
+      if (!need[id]()) { await inputQuiet(1000, 8000); await turn(); runScriptText(texts.join('')); }
+      if (!need[id]()) throw new Error('this page’s security settings do not let the detectors start');
     }
+  }
+
+  function mainClient() {
+    let eng = null, lostCb = null;
+    return {
+      mode: 'main',
+      async start(opts, hooks) {
+        await runHeavyParts();
+        await turn();
+        eng = window.PSEngine.create({ tf: window.tf, coop: true, budgetMs: 30, fdDetector: customFd });
+        const info = await eng.init(Object.assign({}, opts, { onBackend: hooks.onBackend }));
+        const cv = eng.glCanvas();
+        if (cv && cv.addEventListener && !cv.__psWatched) {
+          cv.__psWatched = true;
+          lostCb = () => { if (hooks.onLost) setTimeout(() => hooks.onLost('event'), 0); };
+          cv.addEventListener('webglcontextlost', () => { if (eng && eng.glCanvas() === cv && lostCb) lostCb(); }, false);
+        }
+        return info;
+      },
+      async detect(canvas, opts) {
+        const r = await eng.detect(canvas, opts);
+        r.numTensors = window.tf.memory().numTensors;
+        return r;
+      },
+      reset() { if (eng) eng.reset(); },
+      debug(what) { if (what === 'lose-context') { try { window.tf.backend().gpgpu.gl.getExtension('WEBGL_lose_context').loseContext(); } catch (e) { /* not WebGL */ } } },
+      gpuLost() { return !!(eng && eng.gpuLost()); },
+      progressAt: () => (eng && eng.yieldFn ? eng.yieldFn.lastCall : 0),
+      maxGap: () => (eng && eng.yieldFn ? eng.yieldFn.maxGap : 0),
+      engine: () => eng,
+      terminate(lost) {
+        const tf = window.tf;
+        const wasGl = eng && eng.info().backend === 'webgl';
+        // TF.js polls a fence on a lost context forever (a busy loop with console warnings): drop it
+        if (lost && tf) { try { const gp = tf.backend().gpgpu; if (gp && Array.isArray(gp.itemsToPoll)) gp.itemsToPoll = []; } catch (e) { /* ignore */ } }
+        if (eng) eng.dispose();
+        eng = null; lostCb = null;
+        if (lost && wasGl && tf) {
+          // a fresh WebGL backend (TF.js forgets the lost context and makes a new one)
+          const fac = tf.findBackendFactory && tf.findBackendFactory('webgl');
+          try { tf.removeBackend('webgl'); } catch (e) { /* ignore */ }
+          if (fac && !tf.findBackendFactory('webgl')) { try { tf.registerBackend('webgl', fac, 2); } catch (e) { /* CPU next time */ } }
+        }
+      },
+    };
+  }
+
+  // the frame size the detectors will see (warm-up at that size compiles the right WebGL shaders)
+  function warmupSize() {
+    const src = state.src;
+    const W = src && src.w ? src.w : 640, H = src && src.h ? src.h : 480;
+    const k = Math.min(1, 640 / Math.max(W, H));
+    return [Math.max(1, Math.round(H * k)), Math.max(1, Math.round(W * k))];
+  }
+
+  function applyEngineInfo(info) {
+    state.engineInfo = info;
+    state.backend = info.backend;
+    state.backendInfo = info.backendInfo;
+    state.loadMs = info.loadMs;
+    state.fd = info.fd ? Object.assign({}, info.fd) : FIREDOOR_STUB;
+    state.fdError = info.fdError ? new Error(info.fdError) : null;
+    state.fdReady = true;
+    state.numTensors = info.numTensors;
+  }
+
+  // start (or restart) the detectors; o.prefer = 'cpu' after repeated graphics resets
+  async function startEngine(o) {
+    o = o || {};
+    const pref = o.mode || enginePref();
+    const opts = { prefer: o.prefer || (qs.get('backend') === 'cpu' ? 'cpu' : undefined), allowSoftwareWebGL: qs.get('swgl') !== '0', warmup: warmupSize() };
+    const hooks = {
+      onBackend: (i) => { state.backend = i.backend; state.backendInfo = i.backendInfo; updateStatus(true); },
+      onLost: (why) => { onGpuLost(why === 'crash' ? 'stall' : 'event'); },
+    };
+    let client = null, info = null;
+    const canWorker = typeof Worker !== 'undefined' && typeof Blob !== 'undefined' && !!(window.URL && URL.createObjectURL) && !!window.PSEngine;
+    if (pref !== 'main' && !customFd && canWorker) {
+      state.engineStage = 'worker';
+      updateStatus(true);
+      try { client = workerClient(); info = await client.start(opts, hooks); } catch (e) {
+        state.workerError = String(e && e.message || e);
+        if (client) client.terminate();
+        client = null;
+        if (pref === 'worker') throw e;
+        console.warn('PyroSight Camera: detector worker unavailable, running the detectors on the page (slower to answer taps): ' + state.workerError);
+      }
+    }
+    if (!client) {
+      if (!window.PSEngine) throw new Error('detector code missing from the page');
+      state.engineStage = 'main';
+      updateStatus(true);
+      client = mainClient();
+      info = await client.start(opts, hooks);
+    }
+    state.engine = client;
+    state.engineMode = client.mode;
+    state.runsSinceStart = 0;
+    state.paused = false;
+    applyEngineInfo(info);
+  }
+
+  function engineReset() { if (state.engine) { try { state.engine.reset(); } catch (e) { /* ignore */ } } }
+
+  async function setFireDoorDetector(det) {
+    customFd = det || FIREDOOR_STUB;     // a detector object lives on this thread: the engine runs here with it
+    if (!state.engine) { updateStatus(true); return; }   // picked up when the engine starts
+    await restartEngine('main');
     $('credits').textContent = creditsText();
     updateStatus(true);
+  }
+
+  async function restartEngine(mode) {
+    state.inferGen++; state.busy = false;
+    state.modelsReady = false;
+    const prev = state.engine;
+    state.engine = null;
+    if (prev) { try { prev.terminate(false); } catch (e) { /* ignore */ } }
+    try {
+      await startEngine({ mode });
+      state.modelsReady = true;
+      state.loadError = null;
+    } catch (e) {
+      state.loadError = e;
+    }
   }
 
   function creditsText() {
@@ -243,30 +432,15 @@
     return s;
   }
 
-  // ------------------------------------------------------------ models
   async function loadModels() {
     const t0 = performance.now();
     try {
-      if (!window.tf || !window.PSPeople || !window.PS_PEOPLE_ASSETS) throw new Error('detector code missing from the page');
-      const prefer = qs.get('backend') === 'cpu' ? 'cpu' : undefined;
-      state.backend = await PSPeople.setupBackend(tf, { prefer, allowSoftwareWebGL: qs.get('swgl') !== '0' });
-      state.backendInfo = PSPeople.backendInfo;
-      updateStatus(true);
-      try {
-        await PSPeople.init(tf, window.PS_PEOPLE_ASSETS);
-      } catch (e) {
-        if (state.backend === 'cpu') throw e;
-        state.backend = await PSPeople.setupBackend(tf, { prefer: 'cpu' });   // WebGL failed: CPU
-        state.backendInfo = PSPeople.backendInfo;
-        await PSPeople.init(tf, window.PS_PEOPLE_ASSETS);
-      }
-      const det = window.PS_FIREDOOR_DETECTOR || fireDoorAdapter() || FIREDOOR_STUB;
-      state.fd = det;
-      try { await det.init(tf); } catch (e) { state.fdError = e; state.fd = FIREDOOR_STUB; }
-      state.fdReady = true;
+      await domReady();
+      await afterPaint();
+      if (window.PS_FIREDOOR_DETECTOR) customFd = window.PS_FIREDOOR_DETECTOR;
+      await startEngine();
       state.modelsReady = true;
       state.loadMs = performance.now() - t0;
-      watchGpu();
     } catch (e) {
       state.loadError = e;
       console.error('PyroSight Camera: detectors failed to load', e);
@@ -280,15 +454,17 @@
     state.src = src;
     state.results = null; state.lastPersons = null; state.inferredSrc = null; state.lastInferVideoTime = -1;
     state.lastVideoTime = -1; eyeFrameKey = null;
+    state.trackAfterT = performance.now() + TRACK_SETTLE_MS;
+    state.paused = false;
     clearMark(true);
-    tracker.reset();
+    resetTracker();
     state.al = {};
-    if (state.fd && state.fd.reset) { try { state.fd.reset(); } catch (e) { /* ignore */ } }
+    engineReset();
     if (src && src.w && src.h) $('screen').style.aspectRatio = src.w + ' / ' + src.h;
     if (src) state.cameraError = null;
     $('overlay').hidden = !!src;
-    $('mark').disabled = !src;
-    $('whereout').disabled = !src;
+    $('mark').disabled = !src || navUi.on;           // navigation replaces the mark while it runs
+    $('whereout').disabled = !src && !navUi.on;
     state.camMuted = false;
     setStartButton();
     updateStatus(true);
@@ -296,10 +472,12 @@
 
   function stopTracks(stream) { if (stream) { try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ } } }
 
-  function stopSource() {
+  function stopSource(keepRequest) {
     const s = state.src;
-    state.camReq++;                 // a camera request still waiting for an answer is now stale
-    state.camPending = false;
+    if (!keepRequest) {
+      state.camReq++;               // a camera request still waiting for an answer is now stale
+      state.camPending = false;
+    }
     if (state.stream) { stopTracks(state.stream); state.stream = null; }
     camVideo.srcObject = null;
     if (s && s.kind === 'video') {
@@ -348,13 +526,16 @@
     if (state.camPending) return;
     hideNotice();
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { cameraError({ name: 'NoMediaDevices' }); return; }
-    stopSource();
-    setSource(null);
+    // a photo or video being analysed stays until the camera really starts (inside a page that may
+    // not use the camera it would otherwise be thrown away for nothing); a camera is stopped first
+    // (phones cannot open two)
+    const keep = !!(state.src && state.src.kind !== 'camera');
+    if (!keep) { stopSource(); setSource(null); }
     const req = ++state.camReq;
     state.camPending = true;
     const live = () => req === state.camReq;
     setStartButton();
-    showOverlay('Waiting for the camera…', 'Allow camera access if your browser asks. Video never leaves your device.', false);
+    if (!keep) showOverlay('Waiting for the camera…', 'Allow camera access if your browser asks. Video never leaves your device.', false);
     const constraints = (id) => {
       const video = { width: { ideal: 1280 }, height: { ideal: 720 } };
       if (id) video.deviceId = { exact: id };
@@ -374,6 +555,7 @@
       if (!stream && live() && deviceId) stream = await ask({ video: true, audio: false });
       if (!live()) { stopTracks(stream); return; }
       if (!stream) { state.camPending = false; cameraError(err); return; }
+      if (state.src) { stopSource(true); setSource(null); }      // the kept photo / video: the camera replaces it now
       state.stream = stream;
       camVideo.srcObject = stream;
       camVideo.muted = true;
@@ -381,7 +563,7 @@
       try { const pp = camVideo.play(); if (pp && pp.catch) pp.catch(() => { /* autoplay attribute and the frame loop retry */ }); } catch (e) { /* ignore */ }
       const ok = await waitFor(() => camVideo.videoWidth > 0 || !live(), 8000);
       if (!live()) { stopTracks(stream); return; }
-      if (!ok) { stopSource(); setSource(null); cameraError({ name: 'NoFrames' }); return; }
+      if (!ok) { stopSource(true); setSource(null); cameraError({ name: 'NoFrames' }); return; }
       state.camPending = false;
       const track = stream.getVideoTracks()[0];
       state.facing = facingOf(track);
@@ -411,9 +593,19 @@
     stopSource(); setSource(null); cameraError({ name: 'Ended' });
   }
 
+  // The Start button keeps one width whatever it says (a wider label wrapped the row and moved every
+  // button below it while the camera permission prompt was open).
+  const START_LABELS = ['Start camera', 'Stop camera', 'Starting…'];
+  function fixStartWidth() {
+    const b = $('start'), t0 = b.textContent;
+    let w = 0;
+    for (const t of START_LABELS) { b.textContent = t; w = Math.max(w, b.getBoundingClientRect().width); }
+    b.textContent = t0;
+    if (w > 0) b.style.minWidth = Math.ceil(w) + 'px';
+  }
   function setStartButton() {
     const b = $('start');
-    const t = state.camPending ? 'Starting camera…' : state.src && state.src.kind === 'camera' ? 'Stop camera' : 'Start camera';
+    const t = state.camPending ? START_LABELS[2] : state.src && state.src.kind === 'camera' ? START_LABELS[1] : START_LABELS[0];
     if (b.textContent !== t) b.textContent = t;
     b.disabled = state.camPending;
     $('ov-start').disabled = state.camPending;
@@ -450,7 +642,7 @@
     } else {
       text = 'The camera could not be started (' + (name || String(e)) + ').';
     }
-    showOverlay(title, 'See below for other ways to try it.', true);
+    if (!state.src) showOverlay(title, 'See below for other ways to try it.', true);   // a kept photo / video stays visible
     $('ov-start').textContent = 'Try again';
     $('notice-title').textContent = title;
     $('notice-text').textContent = text;
@@ -531,7 +723,7 @@
   // ------------------------------------------------------------ canvas
   let needResize = true;
   if (window.ResizeObserver) new ResizeObserver(() => { needResize = true; }).observe(view);
-  window.addEventListener('resize', () => { needResize = true; });
+  window.addEventListener('resize', () => { needResize = true; navUi.dirty = true; });
 
   function resizeCanvas() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -577,7 +769,7 @@
           src.w = el.videoWidth; src.h = el.videoHeight;
           $('screen').style.aspectRatio = src.w + ' / ' + src.h;
           state.results = null; state.lastPersons = null;
-          tracker.reset();
+          resetTracker();
           // the turn tracker cannot follow a rotation of the picture itself: say so instead of
           // dropping the mark silently
           if (state.mark) { clearMark(true); say('Way out mark cleared: the picture turned. Mark it again.', { minGap: 0 }); }
@@ -586,7 +778,18 @@
           state.lastVideoTime = el.currentTime;
           state.newFrame = true;
           state.fpsCount++;
-          if (ts - state.lastTrackT >= 25) { state.lastTrackT = ts; track(src, ts); }
+          // the turn tracker gets at most ~30 % of this thread: on a slow CPU it runs less often
+          // (down to 2 per second) instead of leaving no time for taps and frames; not at all in the
+          // first 0.4 s of a new picture source (the camera's start-up work and taps come first)
+          const gap = Math.min(TRACK_MAX_GAP_MS, Math.max(25, Math.max(state.trackMs, TRACK_START_MS * !state.trackRuns) / TRACK_SHARE));
+          if (ts - state.lastTrackT >= gap && performance.now() >= state.trackAfterT) {
+            state.lastTrackT = ts;
+            const t0 = performance.now();
+            track(src, ts);
+            const dt = performance.now() - t0;
+            state.trackRuns = (state.trackRuns || 0) + 1;
+            state.trackMs = state.trackRuns === 1 ? dt : dt > state.trackMs ? 0.5 * (state.trackMs + dt) : 0.85 * state.trackMs + 0.15 * dt;
+          }
         }
       }
     }
@@ -601,6 +804,7 @@
       state.fps = fps; state.fpsCount = 0; state.fpsT0 = ts;
     }
     draw(ts);
+    navFrame(ts);
     exitAlerts(ts);
     pumpSpeech();
     maybeInfer(ts);
@@ -615,13 +819,14 @@
     M.greyFromRGBA(d, n, grey);
     const r = tracker.update(grey, src.w, src.h, ts);
     state.stats.trackStates[r.state] = (state.stats.trackStates[r.state] || 0) + 1;
+    navFeedTracker(r);
     if (window.__psTrackHook) { try { window.__psTrackHook(src.el, tracker.pose, r); } catch (e) { /* test hook */ } }
   }
 
   // ------------------------------------------------------------ inference
   function maybeInfer(ts) {
     const src = state.src;
-    if (!state.modelsReady || state.busy || !src || document.hidden || state.recovering) return;
+    if (!state.modelsReady || !state.engine || state.busy || !src || document.hidden || state.recovering) return;
     if (src.kind === 'image') {
       if (state.inferredSrc === src && state.inferredFd === state.fd) return;
     } else {
@@ -630,12 +835,14 @@
       if (src.kind === 'camera' && state.camMuted) return;          // the camera sends no picture
       if (el.paused && el.currentTime === state.lastInferVideoTime) return;
       if (src.blankUntil && ts < src.blankUntil) return;           // last frame was blank: retry shortly
-      if (state.backend === 'cpu' && ts - state.lastInferEnd < 250) return;   // keep the page responsive on CPU
+      // CPU backend on this thread: a pause between updates keeps the page responsive (the worker needs none)
+      if (state.backend === 'cpu' && state.engineMode !== 'worker' && ts - state.lastInferEnd < 250) return;
     }
+    // fallback engine on this thread: an idle gap after every update, so taps and frames get through
+    if (state.engineMode === 'main' && ts - state.lastInferEnd < Math.max(MAIN_IDLE_MS, 0.25 * (state.lastBusyMs || 0))) return;
     infer(src);
   }
 
-  function nextFrame() { return new Promise((r) => requestAnimationFrame(() => r())); }
 
   function withTimeout(p, ms) {
     return new Promise((resolve, reject) => {
@@ -651,9 +858,7 @@
 
   // An all-black capture: a video or camera whose first frame has not been presented yet (or a
   // lens that is covered). Sampled sparsely; only checked until a real picture has been seen.
-  function blankCapture(cw, ch) {
-    let d;
-    try { d = capCtx.getImageData(0, 0, cw, ch).data; } catch (e) { return false; }
+  function blankPixels(d) {
     const step = 4 * 97;
     for (let i = 0; i < d.length; i += step) if (d[i] > 6 || d[i + 1] > 6 || d[i + 2] > 6) return false;
     return true;
@@ -675,6 +880,7 @@
   async function infer(src) {
     const gen = ++state.inferGen;      // a stalled run (lost graphics context) is abandoned by bumping this
     const current = () => gen === state.inferGen;
+    const client = state.engine;
     state.busy = true;
     const t0 = performance.now();
     state.inferT0 = t0;
@@ -683,22 +889,26 @@
     const scale = Math.min(1, 640 / Math.max(W, H));
     const cw = Math.max(1, Math.round(W * scale)), ch = Math.max(1, Math.round(H * scale));
     if (cap.width !== cw || cap.height !== ch) { cap.width = cw; cap.height = ch; }
-    let px = null;
     let capInfo = null;
     try {
       capCtx.drawImage(src.el, 0, 0, cw, ch);
+      let im = null;
       if (src.kind !== 'image' && !src.seenPicture) {
-        if (blankCapture(cw, ch)) { src.blankUntil = performance.now() + 300; return; }
+        try { im = capCtx.getImageData(0, 0, cw, ch); } catch (e) { im = null; }
+        if (im && blankPixels(im.data)) { src.blankUntil = performance.now() + 300; return; }
         src.seenPicture = true;
       }
       if (src.kind !== 'image') state.lastInferVideoTime = src.el.currentTime;
       if (window.__psCaptureHook) { try { capInfo = window.__psCaptureHook(cap, capCtx); } catch (e) { /* test hook */ } }
-      px = tf.browser.fromPixels(cap);
       const hfov = effectiveHfov(W, H);
       const cpu = state.backend === 'cpu';
       const runPerson = !cpu || state.cycle % 2 === 0 || !state.lastPersons || src.kind === 'image';
       state.cycle++;
-      const r = await PSPeople.detect(px, { hfovDeg: hfov, person: runPerson });
+      // the fire/door centre pass: every update, except on the CPU backend only when the person model rests
+      const opts = { hfovDeg: hfov, person: runPerson, zoom: src.kind === 'image' || (cpu ? !runPerson : 'auto'), fd: !!state.fdReady };
+      // worker: the pixels (transferred, not copied); this thread: the canvas itself
+      const frame = client.mode === 'worker' ? (im || capCtx.getImageData(0, 0, cw, ch)) : cap;
+      const r = await client.detect(frame, opts);
       if (!current()) return;
       let people;
       if (runPerson) {
@@ -708,26 +918,22 @@
         const faces = r.detections.filter((d) => d.cls === 'face');
         people = PSPeople.merge(carriedPersons(capPose, W, H).concat(faces), r.width, r.height, { hfovDeg: hfov });
       }
-      if (cpu) await nextFrame();
-      if (!current()) return;
-      const t1 = performance.now();
-      let fd = [];
-      // the fire/door centre pass: every update, except on the CPU backend only when the person model rests
-      if (state.fd && state.fdReady && state.src === src) fd = (await state.fd.detect(px, { zoom: src.kind === 'image' || (cpu ? !runPerson : 'auto') })) || [];
-      if (!current()) return;
-      const fdMs = performance.now() - t1;
+      const fd = r.fd || [];
       if (state.src !== src) return;     // source changed meanwhile
       const res = {
         people, fire: fd.filter((d) => d.cls === 'fire'), door: fd.filter((d) => d.cls === 'door'),
         pose: capPose, t: t0, w: W, h: H,
-        ms: { person: runPerson ? r.ms.person : null, face: r.ms.face, firedoor: fdMs, total: performance.now() - t0 },
+        ms: { person: runPerson ? r.ms.person : null, face: r.ms.face, firedoor: r.ms.firedoor, total: performance.now() - t0 },
       };
       state.results = res;
+      state.numTensors = r.numTensors;
+      state.runsSinceStart++;
+      state.paused = false; state.slowSaid = false;
+      if (state.backend === 'webgl') state.incidentStreak = 0;     // graphics work again: forget earlier resets
       state.lastCycleMs = state.upsTimes.length ? performance.now() - state.upsTimes[state.upsTimes.length - 1] : res.ms.total;
       if (src.kind === 'image') { state.inferredSrc = src; state.inferredFd = state.fd; }
       state.stats.inferences++;
-      const nt = tf.memory().numTensors;
-      state.stats.tensors.push(nt);
+      state.stats.tensors.push(r.numTensors);
       if (state.stats.tensors.length > 2000) state.stats.tensors.splice(0, 1000);
       state.stats.ms.push(res.ms);
       if (state.stats.ms.length > 500) state.stats.ms.splice(0, 250);
@@ -743,35 +949,24 @@
       state.inferError = e;
       state.stats.errors.push(String(e && e.message || e));
       console.warn('PyroSight Camera: detection failed', e);
-      if (gpuLost()) onGpuLost('error');
+      if ((e && e.lost) || gpuLost()) onGpuLost('error');
     } finally {
-      if (px) { try { px.dispose(); } catch (e) { /* lost context */ } }
       if (current()) {
         state.busy = false;
         state.lastInferEnd = performance.now();
+        state.lastBusyMs = state.lastInferEnd - t0;
       }
     }
   }
 
   // ------------------------------------------------------------ detector health
   // Phones drop the WebGL context under memory pressure or after the page was in the background.
-  // TF.js then never finishes the pending read (busy for good). Detect it (event, isContextLost(),
-  // or a run that takes far longer than usual), drop the old boxes, tell the viewer and restart the
-  // detectors: on a new WebGL context, or on the CPU after repeated losses.
+  // TF.js then never finishes the pending read (busy for good). Detect it (the worker's 'lost'
+  // message or the context-lost event, isContextLost(), or a run that takes far longer than usual),
+  // drop the old boxes, tell the viewer and restart the detectors: a new worker (or, on this thread,
+  // a new WebGL backend), on the CPU after repeated losses.
   function gpuLost() {
-    if (state.backend !== 'webgl') return false;
-    try { const gl = tf.backend().gpgpu.gl; return !!(gl && gl.isContextLost()); } catch (e) { return false; }
-  }
-
-  function watchGpu() {
-    if (state.backend !== 'webgl') return;
-    try {
-      const gl = tf.backend().gpgpu.gl, cv = gl && gl.canvas;
-      if (cv && cv.addEventListener && !cv.__psWatched) {
-        cv.__psWatched = true;
-        cv.addEventListener('webglcontextlost', () => { if (gl === tf.backend().gpgpu.gl) setTimeout(() => onGpuLost('event'), 0); }, false);
-      }
-    } catch (e) { /* not WebGL */ }
+    try { return !!(state.engine && state.engine.gpuLost()); } catch (e) { return false; }
   }
 
   function typicalRunMs() {
@@ -779,11 +974,44 @@
     return m.length ? m[m.length >> 1] : 0;
   }
 
+  // How long the detectors may be silent (no beat from the worker, no step of the engine on this
+  // thread) before they count as dead or hung: generous on the CPU, and at least 3x the longest
+  // silence seen while they were working normally (a slow phone's long steps).
+  function quietLimitMs(cl) {
+    const base = cl && cl.mode === 'worker' ? (state.backend === 'cpu' ? 30000 : 8000) : 20000;
+    return Math.max(base, 3 * (cl && cl.maxGap ? cl.maxGap() : 0));
+  }
+  // How long one run may take in the worker (which keeps beating while a WebGL run hangs): the
+  // first run after a (re)start is not judged by a fixed 20 s (a slow CPU needs longer).
+  function runLimitMs() {
+    if (!state.runsSinceStart) return state.backend === 'cpu' ? 180000 : 60000;
+    return Math.max(20000, 8 * typicalRunMs());
+  }
+
   function watchDetection(ts) {
     if (!state.modelsReady || state.recovering || ts - state.lastCheckT < 500) return;
     state.lastCheckT = ts;
     if (gpuLost()) { onGpuLost('poll'); return; }
-    if (state.busy && performance.now() - state.inferT0 > Math.max(20000, 8 * typicalRunMs())) onGpuLost('stall');
+    if (!state.busy) return;
+    const now = performance.now(), runMs = now - state.inferT0, cl = state.engine, src = state.src;
+    // much longer than usual: the boxes on screen are out of date; drop them and say so
+    if (!state.paused && src && src.live && runMs > Math.max(5000, 3 * typicalRunMs())) {
+      state.paused = true; state.results = null; state.lastPersons = null;
+      updateStatus(true);
+    }
+    // nothing heard from the detectors: a worker that died or hangs, a run that stopped moving
+    const quiet = now - Math.max(state.inferT0, cl && cl.progressAt ? cl.progressAt() : 0);
+    if (quiet > quietLimitMs(cl)) { onGpuLost('stall'); return; }
+    // the worker still answers but this run takes far too long (a WebGL run that never finishes)
+    if (cl && cl.mode === 'worker' && runMs > runLimitMs()) {
+      if (state.lastRecovery === 'stall' && !state.runsSinceStart) {
+        // restarted for this already and no run has finished since: this device is just slow.
+        // Restarting again would reload the models and time out again, forever: keep waiting.
+        if (!state.slowSaid) { state.slowSaid = true; say('Detection is very slow on this device. Still trying.', { minGap: 0, speak: false }); }
+        return;
+      }
+      onGpuLost('stall');
+    }
   }
 
   async function onGpuLost(why) {
@@ -792,43 +1020,29 @@
     state.modelsReady = false;
     state.inferGen++; state.busy = false;              // abandon the run that will never finish
     state.results = null; state.lastPersons = null;    // its boxes are stale: stop drawing them
-    if (state.fd && state.fd.reset) { try { state.fd.reset(); } catch (e) { /* ignore */ } }
     if (why !== 'stall') state.gpuLosses++; else state.stalls++;
+    state.incidentStreak++;
+    state.lastRecovery = why === 'stall' ? 'stall' : 'lost';
+    state.paused = false;
     state.stats.recoveries.push({ why, t: Math.round(performance.now()) });
-    // TF.js polls a fence on the lost context forever (a busy loop with console warnings): drop it
-    try { const gp = tf.backend().gpgpu; if (gp && Array.isArray(gp.itemsToPoll)) gp.itemsToPoll = []; } catch (e) { /* ignore */ }
     say(why === 'stall' ? 'Detection stalled. Restarting.' : 'Detection stopped: the graphics chip was reset. Restarting.', { minGap: 0 });
     updateStatus(true);
+    const prev = state.engine;
+    state.engine = null;
+    try { if (prev) prev.terminate(true); } catch (e) { /* lost context */ }
     await new Promise((r) => setTimeout(r, 300));
-    const start = async (prefer) => {
-      try { PSPeople.dispose(); } catch (e) { /* lost context */ }
-      try { if (state.fd && state.fd.dispose) state.fd.dispose(); } catch (e) { /* lost context */ }
-      state.fd = null; state.fdReady = false;
-      if (state.backend === 'webgl') {
-        // a fresh WebGL backend (TF.js forgets the lost context and makes a new one)
-        const fac = tf.findBackendFactory && tf.findBackendFactory('webgl');
-        try { tf.removeBackend('webgl'); } catch (e) { /* ignore */ }
-        if (fac && !tf.findBackendFactory('webgl')) { try { tf.registerBackend('webgl', fac, 2); } catch (e) { prefer = 'cpu'; } }
-        if (!fac) prefer = 'cpu';
-      }
-      state.backend = await withTimeout(PSPeople.setupBackend(tf, { prefer, allowSoftwareWebGL: qs.get('swgl') !== '0' }), 15000);
-      state.backendInfo = PSPeople.backendInfo;
-      await withTimeout(PSPeople.init(tf, window.PS_PEOPLE_ASSETS), 90000);
-      const det = window.PS_FIREDOOR_DETECTOR || fireDoorAdapter() || FIREDOOR_STUB;
-      state.fd = det;
-      try { await withTimeout(det.init(tf), 60000); } catch (e) { state.fdError = e; state.fd = FIREDOOR_STUB; }
-      state.fdReady = true;
-    };
+    const mode = prev ? prev.mode : undefined;
     try {
       try {
-        await start(state.gpuLosses + state.stalls >= 3 ? 'cpu' : undefined);   // keeps failing: stay on the CPU
+        // keeps failing (3 resets or stalls with no completed WebGL run in between): the CPU from now on
+        await withTimeout(startEngine({ mode, prefer: state.incidentStreak >= 3 ? 'cpu' : undefined }), 180000);
       } catch (e) {
         if (state.backend === 'cpu') throw e;
-        await start('cpu');
+        if (state.engine) { try { state.engine.terminate(true); } catch (x) { /* ignore */ } state.engine = null; }
+        await withTimeout(startEngine({ mode, prefer: 'cpu' }), 180000);
       }
       state.modelsReady = true;
       state.loadError = null;
-      watchGpu();
       say('Detection running again' + (state.backend === 'cpu' ? ', slower, on the processor.' : '.'), { minGap: 0, speak: false });
     } catch (e) {
       state.loadError = e;
@@ -850,7 +1064,8 @@
       backend: state.backend, software: !!(state.backendInfo && state.backendInfo.software),
       ms: { person: res.ms.person == null ? null : Math.round(res.ms.person), face: Math.round(res.ms.face),
         firedoor: Math.round(res.ms.firedoor), total: Math.round(res.ms.total) },
-      tensors: tf.memory().numTensors,
+      tensors: state.numTensors,
+      engine: state.engineMode,
       people: res.people.map((d) => box(d, { label: d.label || '', from: d.src, dist: d.dist == null ? null : +d.dist.toFixed(2) })),
       fire: res.fire.map((d) => box(d, { label: 'FIRE' })),
       door: res.door.map((d) => box(d, { label: 'DOOR' })),
@@ -898,7 +1113,13 @@
       g.fillStyle = '#0a0d12';
       g.fillRect(0, 0, cw, ch);
     }
-    if (!src || !src.w || !src.h) { state.fit = null; return; }
+    const sim = navSimView();
+    if (sim !== navUi.simShown) { navUi.simShown = sim; $('screen').classList.toggle('sim', sim); }
+    if (!src || !src.w || !src.h) {
+      state.fit = null;
+      if (sim) drawSimView(ts); else navUi.overlay = null;
+      return;
+    }
     const fit = contain(src.w, src.h, cw, ch);
     state.fit = fit;
     if (state.eyepiece) drawEyepiece(src, fit);
@@ -910,7 +1131,7 @@
       g.restore();
     }
     const res = resultsToDraw(src);
-    const ex = exitInfo(src);
+    const ex = navUi.on ? null : exitInfo(src);        // while navigation runs its marker replaces the mark
     const exitBox = ex && ex.trusted && ex.inView ? ex.box : null;
     // boxes first, labels last (FIRE on top), so no box edge runs through a label
     const labels = [];
@@ -924,8 +1145,10 @@
       for (const d of res.people) drawBox(toCanvas(mv(d), fit, src.mirror), COL.person, d.label || '', fit, s, labels, 2);
       for (const d of res.fire) drawBox(toCanvas(mv(d), fit, src.mirror), COL.fire, 'FIRE', fit, s, labels, 3);
     }
-    drawExit(src, fit, s, ts, labels);
-    drawLabels(labels, fit, s);
+    if (navUi.on) drawNavExit(src, fit, s, ts, labels, state.eyepiece); else { navUi.overlay = null; drawExit(src, fit, s, ts, labels); }
+    const ring = navUi.on && state.eyepiece;          // eyepiece view: the device's navigation ring, top centre
+    drawLabels(labels, fit, s, ring ? [navRingRect(fit)] : null);
+    if (ring) drawNavRing(fit, s, ts);
     drawHud(src, fit, s);
   }
 
@@ -978,12 +1201,12 @@
 
   // Labels above their box like the device; if that spot is taken by another label (or off the
   // picture), just inside the top edge, then below the box. Higher pri is placed first (FIRE).
-  function drawLabels(labels, fit, s) {
+  function drawLabels(labels, fit, s, reserved) {
     const fs = 14 * s;
     setFont(fs);
     g.textBaseline = 'alphabetic';
     g.textAlign = 'left';
-    const placed = [];
+    const placed = reserved ? reserved.slice() : [];
     const hit = (a) => placed.some((b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h);
     labels.sort((a, b) => b.pri - a.pri);
     const out = [];
@@ -1068,6 +1291,12 @@
     const sign = src.mirror ? -1 : 1;
     let vx = sign * p.rel.yaw, vy = -p.rel.pitch;
     if (Math.abs(p.rel.yaw) > 90) vy *= 0.25;
+    const turn = Math.round(Math.min(180, Math.hypot(p.rel.yaw, p.rel.pitch)));
+    drawEdgeArrow(fit, s, vx, vy, 'EXIT ' + turn + '°' + (p.unsure ? '?' : ''));
+  }
+
+  // green arrow at the edge of the picture pointing along (vx, vy) (screen axes), with a label
+  function drawEdgeArrow(fit, s, vx, vy, text) {
     const len = Math.hypot(vx, vy) || 1;
     vx /= len; vy /= len;
     const m = 30 * s, cx = fit.x + fit.w / 2, cy = fit.y + fit.h / 2;
@@ -1082,15 +1311,16 @@
     g.beginPath(); g.moveTo(tip[0], tip[1]); g.lineTo(l[0], l[1]); g.lineTo(notch[0], notch[1]); g.lineTo(rr[0], rr[1]); g.closePath();
     g.lineJoin = 'round'; g.lineWidth = 4 * s; g.strokeStyle = 'rgba(0,0,0,0.9)'; g.stroke();
     g.fillStyle = COL.exit; g.fill();
-    const turn = Math.round(Math.min(180, Math.hypot(p.rel.yaw, p.rel.pitch)));
-    const text = 'EXIT ' + turn + '°' + (p.unsure ? '?' : '');
     setFont(13 * s);
     const tw = g.measureText(text).width;
+    // beside the arrow's tail (centred behind it, a long label ran over the arrow itself)
     let lx = ax - vx * (r + 8 * s) - tw / 2, ly = ay - vy * (r + 8 * s) + 5 * s;
+    if (Math.abs(vx) > 0.3) { lx = vx < 0 ? ax + r * 0.95 + 6 * s : ax - r * 0.95 - 6 * s - tw; ly = ay + 5 * s; }
     lx = Math.min(Math.max(lx, fit.x + 4 * s), fit.x + fit.w - tw - 4 * s);
     ly = Math.min(Math.max(ly, fit.y + 16 * s), fit.y + fit.h - 6 * s);
     g.textAlign = 'left'; g.textBaseline = 'alphabetic';
     outlinedText(text, lx, ly, COL.exit, s);
+    return { x: ax, y: ay };
   }
 
   function hudText(text, x, y, color, s) {
@@ -1107,7 +1337,7 @@
     const bottom = fit.y + fit.h - 8 * s;
     if (!state.modelsReady) {
       g.textAlign = 'left';
-      hudText(state.loadError ? 'DETECTORS FAILED' : state.recovering ? 'DETECTION STOPPED · RESTARTING…' : 'LOADING AI…',
+      hudText(state.loadError ? 'DETECTORS FAILED' : state.recovering ? 'DETECTION STOPPED · RESTARTING…' : 'LOADING DETECTORS…',
         fit.x + 8 * s, fit.y + 20 * s, state.loadError ? '#FF6B6B' : state.recovering ? '#FFD84A' : '#B4B4B4', s);
     } else if (src.live && state.results && !resultsToDraw(src)) {
       g.textAlign = 'left';
@@ -1123,7 +1353,7 @@
       hudText(state.modelsReady ? 'AI' : '--', fit.x + 8 * s, bottom, '#B4B4B4', s);
       g.textAlign = 'right';
       hudText('LOOK-ALIKE, NOT THERMAL', fit.x + fit.w - 8 * s, bottom, '#B4B4B4', s);
-      if (!state.mark) { g.textAlign = 'center'; hudText('MARK WAY OUT', fit.x + fit.w / 2, fit.y + 20 * s, '#FFFFFF', s); }
+      if (!state.mark && !navUi.on) { g.textAlign = 'center'; hudText('MARK WAY OUT', fit.x + fit.w / 2, fit.y + 20 * s, '#FFFFFF', s); }
       g.textAlign = 'left';
     }
     if (src.kind === 'video' && src.el.paused) {
@@ -1187,6 +1417,7 @@
   // a "lost" was said and tracking has held for RESTORED_SAY_MS.
   const LOST_SAY_MS = 2000, LOST_GAP_MS = 20000, RESTORED_SAY_MS = 2000;
   function exitAlerts(ts) {
+    if (navUi.on) { state.exitLostSince = 0; state.exitOkSince = 0; state.exitOutSince = 0; return; }   // navigation speaks instead
     const src = state.src, p = exitInfo(src);
     if (!p) { state.exitLostSince = 0; state.exitOkSince = 0; return; }
     if (!p.trusted) {
@@ -1333,11 +1564,14 @@
       eng = soft ? 'WebGL on a software renderer (slow, no graphics chip in use)' : 'WebGL (graphics chip)';
       if (soft) engCls = 'warn';
     } else { eng = 'CPU (slow: no usable WebGL here; the person check runs every second update)'; engCls = 'warn'; }
+    if (state.backend && state.engineMode === 'main') eng += ' · on the page itself (no background worker here: taps may lag)';
+    else if (state.backend && state.engineMode === 'worker') eng += ' · in a background worker';
     if (state.recovering) { eng += ' · detection stopped (graphics reset or stall), restarting…'; engCls = 'warn'; }
     else if (state.backend && !state.modelsReady && !state.loadError) eng += ' · loading detectors…';
     else if (state.gpuLosses || state.stalls) eng += ' · restarted ' + plural(state.gpuLosses + state.stalls, 'time', 'times');
     setV('s-engine', eng, engCls);
     $('engine').textContent = state.loadError ? 'Detectors failed' : state.recovering ? 'Restarting detectors…' : !state.modelsReady ? 'Loading detectors…' :
+      state.paused ? 'Detection paused…' :
       (state.backend === 'webgl' ? 'WebGL' : 'CPU') + (res ? ' · ' + Math.round(res.ms.total) + ' ms' : '') +
       (src && src.live ? ' · ' + state.fps.toFixed(0) + ' fps' : '');
     // speed
@@ -1352,10 +1586,11 @@
       setV('s-speed', txt);
     } else setV('s-speed', state.modelsReady ? 'Waiting for a picture' : '–');
     // tensors (stays flat when nothing leaks)
-    $('tensors').textContent = state.modelsReady ? 'tensors ' + tf.memory().numTensors : '';
+    $('tensors').textContent = state.modelsReady && state.numTensors != null ? 'tensors ' + state.numTensors : '';
     // seen
     if (src && src.kind === 'camera' && state.camMuted) setV('s-seen', 'No picture from the camera (another app may be using it, or it is covered)', 'warn');
     else if (state.recovering) setV('s-seen', 'Detection stopped: restarting the detectors…', 'warn');
+    else if (state.paused) setV('s-seen', 'Detection paused: waiting for the detectors (this check is taking much longer than usual)…', 'warn');
     else if (res && src && !resultsToDraw(src)) setV('s-seen', 'Detection paused: no recent check', 'warn');
     else if (res && src) {
       const near = res.people.filter((d) => d.dist > 0).sort((a, b) => a.dist - b.dist)[0];
@@ -1366,8 +1601,9 @@
       setV('s-seen', bits.length ? bits.join(', ') : 'Nothing found');
     } else setV('s-seen', '–');
     // way out
-    const p = exitInfo(src);
-    if (!p) setV('s-exit', 'Not marked');
+    const p = navUi.on ? null : exitInfo(src);
+    if (navUi.on) navStatusLine();
+    else if (!p) setV('s-exit', 'Not marked');
     else if (!p.trusted) setV('s-exit', 'Tracking lost: point the camera back where it was, or mark it again', 'warn');
     else if (p.inView) setV('s-exit', 'In view' + (state.mark.door ? ' (marked at a door)' : '') + (p.unsure ? ' (unsure: picture not matching)' : ''), p.unsure ? 'warn' : '');
     else {
@@ -1393,6 +1629,492 @@
     else if (state.fd.stub) setV('s-fd', 'Not in this build yet (stub finds nothing)' + (state.fdError ? '; model failed: ' + (state.fdError.message || state.fdError) : ''), 'warn');
     else setV('s-fd', state.fd.name + (state.fdReady ? '' : ' (loading)'));
   }
+
+  // ------------------------------------------------------------ navigation (demo)
+  // The eyepiece's own way-back-out navigation: core/src/ps_nav.c, ps_config.c and ps_alerts.c
+  // compiled to plain JavaScript (camera/nav, global PSNav, inlined right after this script; see
+  // camera/nav/README.md). Dead reckoning from steps and turns since the entry, breadcrumbs, the
+  // device's confidence (GOOD / DEGRADED < 0.6 / UNRELIABLE < 0.3, with hysteresis) and its phrases.
+  // "Start here" tries, in order: the phone's motion sensors (the iOS permission request is made
+  // inside that tap), else the camera-turn tracker for the heading with the Walk button for steps
+  // (when a camera or video is running), else the demo walk (a simulated firefighter with a
+  // simulated motion sensor; works with no camera at all). While navigation runs, its marker
+  // replaces "Mark way out" in the picture (the mark is kept and comes back after Stop): an EXIT
+  // box sized by distance when the way out is in the field of view ("EXIT? 5M", dashed, when the
+  // confidence is DEGRADED), else a green edge arrow, and no box but FOLLOW HOSE when UNRELIABLE.
+  // Its phrases go through say() (voice toggle, priority queue below fire and people, alert log).
+  const NAV_COL = { good: '#28FF50', warn: '#FFDC00', bad: '#FF2828' };   // ps_display.c draw_nav
+  const NAV_SPEEDS = [1, 2, 4, 8];
+  const HINT_MARK = 'Mark way out remembers where the camera points now; or tap the picture to mark that spot.';
+  const HINT_NAV = 'Navigation is on: its green EXIT marker and the buttons above replace Mark way out. Press Stop under Navigation to mark by hand again.';
+  const navLoaded = () => !!(window.PSNav && window.PSNav.Navigator);
+
+  $('hint-size1').textContent = HINT_MARK;
+  $('hint-size2').textContent = HINT_NAV;
+
+  function navInitUi() {   // PSNav comes after this script in the page: called once it exists
+    if (navUi.map || !navLoaded()) return;
+    navUi.map = new PSNav.MapRenderer($('nav-map'), { up: 'entry' });
+    navUi.arrow = new PSNav.ArrowWidget($('nav-arrow'));
+    // the same Left / Hold to walk / Right in the navigation card and under the picture
+    const hold = (id, down, up) => {
+      const el = $(id);
+      let downed = false;
+      PSNav.holdButton(el, () => { if (el.disabled || !navUi.nav) return; downed = true; el.classList.add('on'); down(); },
+        () => { el.classList.remove('on'); if (downed && navUi.nav) up(); downed = false; });
+    };
+    for (const pre of ['nav', 'cam']) {
+      hold(pre + '-walk', () => navUi.nav.walk(true), () => navUi.nav.walk(false));
+      hold(pre + '-left', () => navUi.nav.turnHold(1), () => navUi.nav.turnHold(0));
+      hold(pre + '-right', () => navUi.nav.turnHold(-1), () => navUi.nav.turnHold(0));
+    }
+    try {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+        navUi.map.refreshTheme(); navUi.arrow.refreshTheme(); navUi.dirty = true;
+      });
+    } catch (e) { /* old browser: the map re-reads its colours every 30 draws */ }
+    if (window.IntersectionObserver) {
+      new IntersectionObserver((es) => { navUi.visible = es[es.length - 1].isIntersecting; if (navUi.visible) navUi.dirty = true; }).observe($('nav-card'));
+    }
+    navUi.dirty = true;
+  }
+
+  function ensureNav() {
+    if (navUi.nav) return navUi.nav;
+    navInitUi();
+    const nav = navUi.nav = new PSNav.Navigator({ mode: 'auto', demoSpeed: NAV_SPEEDS[navUi.speedIdx] });
+    nav.on('alert', navAlert);
+    nav.on('input', () => { navUi.dirty = true; navButtons(); });
+    nav.on('demo', () => { navUi.dirty = true; });
+    nav.on('entry', () => { navUi.dirty = true; });
+    return nav;
+  }
+
+  function navAlert(a) {
+    if (!navUi.on) return;
+    // the device's queue already spaces its phrases (way out every 15 s while DEGRADED, the hose
+    // every 20 s); one asked for with a button is said even if it was just said
+    const asked = performance.now() - navUi.asked < 2000;
+    const hose = a.names.indexOf('FOLLOW_HOSE') >= 0;
+    say(a.text, { pri: hose ? 1.5 : 1, minGap: asked ? 0 : 3000 });
+  }
+
+  const cameraTurnAvailable = () => !!(state.src && state.src.live);
+  const NAV_WHY = { absent: 'this device reports no motion sensor readings', blocked: 'this page may not read the motion sensors',
+    denied: 'motion access was refused', lost: 'the motion sensors stopped' };
+  // short form for the input indicator (the full reason stays in nav.input.detail)
+  const NAV_WHY_SHORT = { absent: 'No usable motion sensors on this device.', blocked: 'Motion sensors are blocked here.',
+    denied: 'Motion access was refused.', lost: 'The motion sensors stopped.' };
+  function navWhy(status) {
+    let w = NAV_WHY_SHORT[status] || '';
+    // real sensors work in the phone's own browser: say how to get there only where Save exists
+    if (w && downloads && (status === 'blocked' || status === 'absent')) w += ' Save this page to try them in your phone’s browser.';
+    return w;
+  }
+
+  function navStartHere() {
+    if (!navLoaded()) return;
+    const nav = ensureNav();
+    if (navUi.pending) return;
+    navUi.asked = performance.now();
+    navUi.note = '';
+    const m = nav.input.mode, st = nav.input.status;
+    if (navUi.on && (m === 'demo' || m === 'camera' || (m === 'sensors' && st === 'ok'))) {
+      nav.markEntry();       // already running: the entry is here, now
+      navRefresh();
+      return;
+    }
+    navUi.on = true;
+    navUi.pending = true;
+    navUi.why = '';
+    nav.run();
+    const p = nav.useSensors();   // the motion permission request (iOS) is made inside this tap
+    navAfterModeChange();
+    p.then((status) => {
+      navUi.pending = false;
+      if (!navUi.on || nav.input.mode !== 'sensors') { navRefresh(); return; }   // stopped or switched meanwhile
+      if (status !== 'ok') {
+        navUi.why = navWhy(status);
+        if (cameraTurnAvailable()) {
+          nav.useCameraHeading('Motion sensors not used (' + (NAV_WHY[status] || status) + '). Heading: from how the camera picture turns. Steps: hold Walk (or W / up arrow).');
+        } else nav.useDemo({ reason: nav.input.detail });
+      }
+      navAfterModeChange();
+      updateStatus(true);
+    }, () => { navUi.pending = false; navRefresh(); });
+    updateStatus(true);
+  }
+
+  function navDemo(auto) {
+    if (!navLoaded()) return;
+    const nav = ensureNav();
+    navUi.asked = performance.now();
+    navUi.note = '';
+    navUi.why = '';
+    navUi.on = true;
+    navUi.pending = false;
+    if (auto) nav.autoDemo(); else nav.useDemo();
+    nav.run();
+    navAfterModeChange();
+    updateStatus(true);
+  }
+
+  function navGuideOut() {
+    const nav = navUi.nav;
+    navUi.asked = performance.now();
+    if (!navUi.on || !nav || !nav.g.valid) {
+      navUi.note = navUi.pending ? 'Checking for motion sensors… try again in a moment.' :
+        'Press Start here where you go in first (or Demo walk / Auto demo to try it).';
+      navRefresh();
+      return;
+    }
+    navUi.note = '';
+    if (nav.input.mode === 'demo') nav.guideMeOut();   // the walker follows the arrow out by itself
+    else nav.whereOut();                               // the device says the way
+    navRefresh();
+  }
+
+  function navWhereOut() {
+    const nav = navUi.nav;
+    navUi.asked = performance.now();
+    if (nav && nav.g.valid) nav.whereOut();
+    else say('Entry not marked yet.', { minGap: 0 });
+  }
+
+  function navStop() {
+    const nav = navUi.nav;
+    if (!nav || !navUi.on) return;
+    nav.stop();
+    navUi.on = false; navUi.pending = false; navUi.note = '';
+    for (const id of ['nav-walk', 'nav-left', 'nav-right', 'cam-walk', 'cam-left', 'cam-right']) $(id).classList.remove('on');
+    say('Navigation stopped.', { minGap: 0, speak: false });
+    navAfterModeChange();
+    updateStatus(true);
+  }
+
+  function navAfterModeChange() {
+    const nav = navUi.nav;
+    if (navUi.unbindKeys) { navUi.unbindKeys(); navUi.unbindKeys = null; }
+    // keys W/A/D and the arrows, only while the demo walker (or the camera-heading Walk) is in use
+    if (nav && navUi.on && (nav.input.mode === 'demo' || nav.input.mode === 'camera')) navUi.unbindKeys = nav.bindKeys(window);
+    navUi.yawEpoch = -1; navUi.yawOffset = 0; navUi.lastFedYaw = null;
+    navRefresh();
+  }
+
+  // camera-turn tracker -> navigation heading ('camera' input). motion.js yaw is degrees clockwise.
+  function navFeedTracker(r) {
+    const nav = navUi.nav;
+    if (!nav || !navUi.on || nav.input.mode !== 'camera') return;
+    if (navUi.yawEpoch !== trackerEpoch) {
+      // the tracker was reset (another source, the picture rotated): keep the heading continuous
+      navUi.yawOffset = navUi.lastFedYaw == null ? 0 : navUi.lastFedYaw - r.pose.yaw;
+      navUi.yawEpoch = trackerEpoch;
+    }
+    if (r.state === 'lost') {
+      // the picture still comes but does not match: the navigator keeps the last good heading
+      // (a blank wall or a fast turn is not a motion-sensor outage)
+      if (navUi.lastFedYaw != null) nav.feedCameraTrackerYaw(navUi.lastFedYaw, 'lost');
+      return;
+    }
+    const yaw = r.pose.yaw + navUi.yawOffset;
+    navUi.lastFedYaw = yaw;
+    navUi.lastFeedT = performance.now();
+    nav.feedCameraTrackerYaw(yaw, r.state);
+  }
+
+  function navRefresh() { navUi.dirty = true; navButtons(); navText(); }
+
+  function navButtons() {
+    const nav = navUi.nav, on = navUi.on, mode = nav ? nav.input.mode : 'none';
+    $('nav-stop').disabled = !on;
+    // nothing appears or disappears here (that moved the buttons under a finger): unused ones are disabled
+    $('nav-speed').disabled = !(on && mode === 'demo');
+    $('nav-speed').textContent = 'Speed: ' + NAV_SPEEDS[navUi.speedIdx] + 'x';
+    const walkOk = on && (mode === 'demo' || mode === 'camera'), turnOk = on && mode === 'demo';
+    for (const pre of ['nav', 'cam']) {
+      $(pre + '-walk').disabled = !walkOk;
+      $(pre + '-left').disabled = $(pre + '-right').disabled = !turnOk;
+    }
+    // under the picture: the navigation's Left / Walk / Right / Guide me out replace Mark way out
+    // while it runs (the same space: the row below does not move)
+    $('mark-row').classList.toggle('off', on);
+    $('cam-pad').classList.toggle('off', !on);
+    $('nav-state').textContent = on ? (navUi.pending ? 'Starting…' : 'Running') : nav && nav.g.valid ? 'Stopped' : 'Off';
+    // the camera card: navigation replaces Mark way out while it runs
+    $('mark').disabled = !state.src || on;
+    $('whereout').disabled = !state.src && !on;
+    const hint = on ? HINT_NAV : HINT_MARK;
+    if ($('hint').textContent !== hint) $('hint').textContent = hint;
+  }
+
+  function setText(id, t) { const el = $(id); if (el.textContent !== t) el.textContent = t; }
+
+  function navText() {
+    const nav = navUi.nav, inp = nav ? nav.input : null, g = nav ? nav.g : null;
+    // which input is in use
+    if (inp && inp.mode !== 'none') {
+      const detail = navDetail(inp);
+      setText('nav-in-label', inp.label + (inp.status && inp.status !== 'ok' ? ' (' + inp.status + ')' : '') + (navUi.on ? '' : ' · stopped'));
+      setText('nav-in-detail', detail);
+      $('nav-dot').className = 'ndot ' + (!navUi.on ? '' : inp.status === 'ok' ? 'ok' : inp.status === 'waiting' || inp.status === 'asking' ? 'wait' : inp.status === 'off' ? '' : 'bad');
+    }
+    // what the device would say, and its numbers
+    let say1;
+    if (!nav || (!navUi.on && !g.valid)) say1 = 'Not started.';
+    else if (navUi.pending) say1 = 'Checking for motion sensors…';
+    else if (!g.valid) say1 = inp.mode === 'camera' ? 'Waiting for the camera picture to mark the entry…' : 'Waiting to mark the entry…';
+    else if (g.followHose) say1 = 'Navigation estimate unreliable. Follow the hose line out.';
+    else if (g.atExit) say1 = 'You are at the way out.';
+    else say1 = g.phrase;
+    if (nav && !navUi.on && g.valid) say1 = 'Stopped. ' + say1;
+    setText('nav-say', say1);
+    const ok = !!(g && g.valid);
+    setText('nav-route', ok ? g.routeDistM.toFixed(1) + ' m' : '–');
+    setText('nav-home', ok ? g.homeDistM.toFixed(1) + ' m' : '–');
+    setText('nav-conf', ok ? Math.round(g.confidence * 100) + ' % (±' + g.posSigmaM.toFixed(1) + ' m)' : '–');
+    setText('nav-level', ok ? g.level : '–');
+    $('nav-level').className = 'badge' + (ok ? ' ' + g.level : '');
+    let note = navUi.note;
+    if (!note && nav && navUi.on) {
+      const w = nav.walker;
+      if (inp.mode === 'demo' && w) {
+        const r = w.result;
+        note = w.phase === 'inbound' ? 'Auto demo: walking in…' : w.phase === 'scan' ? 'Auto demo: looking around the room…' :
+          w.phase === 'outbound' ? 'Following the arrow out…' :
+          w.phase === 'done' && r ? (r.how === 'hose' ? 'Out by the hose line' : r.how === 'exit' ? 'Arrow says EXIT' : r.how === 'outside' ? 'Walked out' : 'Stopped') +
+            ': ' + r.doorErrorM.toFixed(1) + ' m from ' + (r.ref === 'mark' ? 'where the entry was marked' : 'the real door') + ' (simulation).' :
+            'Hold to walk, Left / Right to turn (or keys W, A, D). Guide me out walks back by itself.';
+      } else if (inp.mode === 'camera') note = 'Turn the camera to turn; hold Walk while you walk. Guide me out says the way.';
+      else if (inp.mode === 'sensors') note = 'Walk with the phone held upright in front of you. Guide me out says the way.';
+    }
+    setText('nav-result', note || '');
+  }
+
+  // the input indicator's sentence: short (it sits above the readouts and the map), the full
+  // reason stays in nav.input.detail
+  const NAV_SENSOR_TEXT = { asking: 'Asking for permission to use the motion sensors…', waiting: 'Waiting for motion sensor data…',
+    ok: 'Heading and steps from this phone’s motion sensors.', lost: 'Motion sensor data stopped.', off: '' };
+  function navDetail(inp) {
+    if (inp.mode === 'demo') return navUi.why ? navUi.why + ' Using the simulated walk instead.' : 'Its estimate drifts like a real motion sensor’s would.';
+    if (inp.mode === 'camera') {
+      if (navUi.on && performance.now() - navUi.lastFeedT > 2500) {
+        return cameraTurnAvailable() ? 'The camera picture is not matching just now (turn slower, or point at something with detail).' :
+          'No moving picture: start the camera (or open a video) to turn with it.';
+      }
+      return (navUi.why ? navUi.why + ' ' : '') + 'Heading from how the camera picture turns; hold Walk for steps.';
+    }
+    if (inp.mode === 'sensors') return NAV_SENSOR_TEXT[inp.status] != null ? NAV_SENSOR_TEXT[inp.status] : (navWhy(inp.status) || inp.detail || '');
+    return inp.detail || '';
+  }
+
+  function navStatusLine() {
+    const nav = navUi.nav, g = nav && nav.g;
+    if (!g || !g.valid) setV('s-exit', navUi.pending ? 'Navigation: checking for motion sensors…' : 'Navigation: entry not marked yet');
+    else if (g.followHose) setV('s-exit', 'Navigation unreliable: follow the hose line out', 'bad');
+    else if (g.atExit) setV('s-exit', 'Navigation: you are at the way out');
+    else setV('s-exit', 'Navigation: ' + g.word.replace('-', ' ') + ', ' + Math.round(g.routeDistM) + ' m (' + g.level.toLowerCase() + ', ' + Math.round(g.confidence * 100) + ' %)', g.levelId ? 'warn' : '');
+  }
+
+  function navFrame(ts) {
+    if (!navUi.map) { navInitUi(); if (!navUi.map) return; }
+    if (!navUi.dirty && (!navUi.on || !navUi.visible)) return;
+    const nav = navUi.nav, d = navUi.dirty;
+    // Redrawing these canvases is most of the card's cost on a slow CPU (measured with Chromium's
+    // 4x throttling: about 7 % of this thread at the old 20 / 10 per second), so the ring is drawn
+    // at the eyepiece's own rate (10 per second) and only when what it shows has changed, and the
+    // map 5 times a second (also when unchanged, at least once a second, so its zoom settles).
+    if (d || ts - navUi.lastArrowT >= 100) {
+      navUi.lastArrowT = ts;
+      const g = nav ? nav.g : null, k = navArrowKey(g);
+      if (d || k !== navUi.arrowKey) { navUi.arrowKey = k; navUi.arrow.draw(g); }
+    }
+    if (d || ts - navUi.lastMapT >= 200) {
+      navUi.lastMapT = ts;
+      const k = navMapKey(nav);
+      if (d || k !== navUi.mapKey || ts - navUi.lastMapDrawT >= 1000) {
+        navUi.mapKey = k; navUi.lastMapDrawT = ts;
+        navUi.map.draw(nav ? nav.snapshot() : { g: {}, trail: [], crumbs: [], demo: null });
+      }
+    }
+    if (d || ts - navUi.lastTextT >= 250) { navUi.lastTextT = ts; navText(); }
+    navUi.dirty = false;
+  }
+
+  // what PSNav.ArrowWidget draws, rounded to what can be seen (1 degree, 1 m, the blink phase)
+  function navArrowKey(g) {
+    if (!g || !g.valid) return 'idle';
+    if (g.levelId === 2) return 'hose ' + Math.round(g.posSigmaM) + ' ' + ((Date.now() / 500 | 0) % 2);
+    return g.levelId + ' ' + (g.routeDistM < 1 ? 'exit' : Math.round(g.routeBearingDeg)) + ' ' + Math.round(g.homeBearingDeg) +
+      ' ' + Math.round(g.routeDistM) + ' ' + g.state;
+  }
+  // changes of the map's content (position to 2 cm, heading to 1 degree, uncertainty, path, breadcrumbs, demo walker)
+  function navMapKey(nav) {
+    if (!nav) return 'none';
+    const g = nav.g, w = nav.walker;
+    if (!g.valid) return 'invalid ' + nav.input.mode;
+    return [Math.round(g.pos.x * 50), Math.round(g.pos.y * 50), Math.round(g.yaw * 57.3), Math.round(g.posSigmaM * 20), g.levelId,
+      nav.trail.length, g.nCrumbs, g.returnTarget, w ? Math.round(w.x * 50) + ' ' + Math.round(w.y * 50) + ' ' + Math.round(w.yaw * 57.3) + ' ' + w.phase : ''].join(' ');
+  }
+
+  // ---- the navigation's way-out marker in the picture (device draw_exit / draw_nav)
+  function navMarker(src) {
+    const nav = navUi.nav;
+    if (!navUi.on || !nav) return null;
+    const g = nav.g;
+    if (!g.valid) return { kind: 'idle', g };
+    if (g.levelId === 2) return { kind: 'hose', g };
+    // the demo walk (and the view without a camera) stands in for the eyepiece, which looks where
+    // the walker faces; a real front camera (mirrored preview) looks back at the viewer
+    const fwd = nav.input.mode === 'demo' || !!src.sim;
+    const b = PSNav.exitBox(g, { hfovDeg: effectiveHfov(src.w, src.h), mirrored: fwd ? false : !!src.mirror,
+      cameraLooksBack: fwd ? false : undefined, width: src.w, height: src.h });
+    b.g = g;
+    b.unsure = g.levelId === 1;
+    return b;
+  }
+
+  function drawNavExit(src, fit, s, ts, labels, ringShown) {
+    const b = navMarker(src);
+    const o = navUi.overlay = b ? { kind: b.kind, label: null, unsure: !!b.unsure, level: b.g.level, side: b.side || null, behind: !!b.behind, rect: null, at: null } : null;
+    if (!b) return;
+    const q = (t) => (b.unsure ? t.replace(/^(\S+)/, '$1?') : t);     // DEGRADED: 'EXIT 5M' -> 'EXIT? 5M'
+    if (b.kind === 'box') {
+      o.label = q(b.label);
+      o.rect = toCanvas(b, fit, false);           // exitBox gives display coordinates (already mirrored)
+      drawBox(o.rect, COL.exit, o.label, fit, s, labels, 1.5, b.unsure);
+    } else if (b.kind === 'edge') {
+      o.label = q(b.label) + (b.behind ? ' BEHIND' : '');
+      o.at = drawEdgeArrow(fit, s, b.side === 'left' ? -1 : 1, b.behind ? 0.45 : 0, o.label);
+    } else if (b.kind === 'route') {
+      // the next leg of the way out is in the picture (the door is further on): a chevron there
+      o.label = q(b.label);
+      const x = fit.x + b.x * fit.w, y = fit.y + fit.h * 0.62, r = 16 * s;
+      o.at = { x, y };
+      g.beginPath(); g.moveTo(x, y - r); g.lineTo(x + r, y + r * 0.6); g.lineTo(x, y); g.lineTo(x - r, y + r * 0.6); g.closePath();
+      g.lineJoin = 'round'; g.lineWidth = 4 * s; g.strokeStyle = 'rgba(0,0,0,0.9)'; g.stroke();
+      g.fillStyle = COL.exit; g.fill();
+      setFont(13 * s); g.textAlign = 'center'; g.textBaseline = 'top';
+      outlinedText(o.label, Math.min(Math.max(x, fit.x + 40 * s), fit.x + fit.w - 40 * s), y + r, COL.exit, s);
+      g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    } else if (b.kind === 'hose' && !ringShown) {
+      // UNRELIABLE: no marker at all (it is not believed), only the device's instruction (steady
+      // here, so it can be read on a busy picture; the eyepiece ring blinks it like the device)
+      o.label = 'FOLLOW HOSE';
+      const cx = fit.x + fit.w / 2, sub = 'NAV ±' + Math.round(b.g.posSigmaM) + 'M';
+      setFont(20 * s);
+      const tw = g.measureText('FOLLOW HOSE').width;
+      g.fillStyle = 'rgba(0,0,0,0.6)';
+      g.fillRect(cx - tw / 2 - 10 * s, fit.y + 6 * s, tw + 20 * s, 52 * s);
+      g.textAlign = 'center'; g.textBaseline = 'top';
+      outlinedText('FOLLOW HOSE', cx, fit.y + 12 * s, NAV_COL.bad, s);
+      setFont(12 * s);
+      outlinedText(sub, cx, fit.y + 38 * s, NAV_COL.bad, s);
+      g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    } else if (b.kind === 'none' && b.reason === 'at the door' && !ringShown) {
+      o.label = 'EXIT';
+      setFont(18 * s); g.textAlign = 'center'; g.textBaseline = 'top';
+      outlinedText('EXIT', fit.x + fit.w / 2, fit.y + 12 * s, COL.exit, s);
+      g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    } else if (b.kind === 'idle' && !ringShown) {
+      setFont(12 * s); g.textAlign = 'center';
+      hudText('MARK ENTRY', fit.x + fit.w / 2, fit.y + 20 * s, '#FFFFFF', s);
+      g.textAlign = 'left';
+    }
+  }
+
+  // the device's ring (draw_nav), scaled from its 320 x 240 screen: top centre, radius 22 at y 30
+  function navRingRect(fit) {
+    const k = fit.h / 240, cx = fit.x + fit.w / 2;
+    return { x: cx - 40 * k, y: fit.y, w: 80 * k, h: 66 * k };
+  }
+
+  function drawNavRing(fit, s, ts) {
+    const nav = navUi.nav;
+    if (!nav) return;
+    const gd = nav.g, k = fit.h / 240, cx = fit.x + fit.w / 2, cy = fit.y + 30 * k, r = 22 * k;
+    const font = (px) => { g.font = '700 ' + Math.round(Math.max(px * k, 9 * s)) + 'px ' + MONO; };
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    if (!gd.valid) {
+      font(10); outlinedText('MARK ENTRY', cx, fit.y + 12 * k, '#FFFFFF', s);
+    } else if (gd.levelId === 2) {
+      if (Math.floor(ts / 500) % 2 === 0) { font(16); outlinedText('FOLLOW HOSE', cx, fit.y + 18 * k, NAV_COL.bad, s); }
+      font(9); outlinedText('NAV ±' + Math.round(gd.posSigmaM) + 'M', cx, fit.y + 36 * k, NAV_COL.bad, s);
+    } else {
+      const col = gd.levelId === 0 ? NAV_COL.good : NAV_COL.warn;
+      g.beginPath(); g.arc(cx, cy, r + 2 * k, 0, 2 * Math.PI);
+      g.lineWidth = 3.2 * k; g.strokeStyle = '#000'; g.stroke();
+      g.lineWidth = 1.4 * k; g.strokeStyle = col; g.stroke();
+      if (gd.routeDistM < 1) { font(16); outlinedText('EXIT', cx, cy, col, s); }
+      else {
+        const a = gd.routeBearingDeg * Math.PI / 180, R = r - 2 * k;
+        const fx = -Math.sin(a), fy = -Math.cos(a), px = -fy, py = fx;
+        const bx = cx - fx * R * 0.55, by = cy - fy * R * 0.55;
+        g.beginPath();
+        g.moveTo(cx + fx * R, cy + fy * R);
+        g.lineTo(bx + px * R * 0.6, by + py * R * 0.6);
+        g.lineTo(cx - fx * R * 0.2, cy - fy * R * 0.2);
+        g.lineTo(bx - px * R * 0.6, by - py * R * 0.6);
+        g.closePath();
+        g.lineJoin = 'round'; g.lineWidth = 2.5 * k; g.strokeStyle = '#000'; g.stroke();
+        g.fillStyle = col; g.fill();
+      }
+      // straight line to the door: a small white square on the ring
+      const h = gd.homeBearingDeg * Math.PI / 180, dx = cx - Math.sin(h) * (r + 2 * k), dy = cy - Math.cos(h) * (r + 2 * k);
+      g.fillStyle = '#000'; g.fillRect(dx - 3.5 * k, dy - 3.5 * k, 7 * k, 7 * k);
+      g.fillStyle = '#FFF'; g.fillRect(dx - 2.5 * k, dy - 2.5 * k, 5 * k, 5 * k);
+      font(10); outlinedText(Math.round(gd.routeDistM) + 'M', cx, cy + r + 10 * k, col, s);
+      if (gd.state === 'lost') { font(9); outlinedText('NO IMU', cx, cy + r + 22 * k, NAV_COL.bad, s); }
+    }
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  }
+
+  // No camera (blocked, as inside claude.ai) while navigation runs: a plain simulated eyepiece
+  // view, so the EXIT box and the ring can still be seen.
+  const navSimView = () => !!(navUi.on && navUi.nav && !state.src);
+  const SIM_SRC = { w: 640, h: 480, mirror: false, sim: true };
+  function drawSimView(ts) {
+    const cw = view.width, ch = view.height, s = state.dpr;
+    const fit = contain(4, 3, cw, ch);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    const grd = g.createLinearGradient(0, fit.y, 0, fit.y + fit.h);
+    grd.addColorStop(0, '#2b2f34'); grd.addColorStop(0.5, '#454a50'); grd.addColorStop(1, '#202327');
+    g.fillStyle = grd; g.fillRect(fit.x, fit.y, fit.w, fit.h);
+    // corridor edges toward the centre, eyepiece grey
+    g.strokeStyle = 'rgba(255,255,255,0.10)'; g.lineWidth = Math.max(1, s);
+    const vx = fit.x + fit.w / 2, vy = fit.y + fit.h / 2;
+    g.beginPath();
+    for (const [x, y] of [[fit.x, fit.y], [fit.x + fit.w, fit.y], [fit.x, fit.y + fit.h], [fit.x + fit.w, fit.y + fit.h]]) { g.moveTo(x, y); g.lineTo(vx + (x - vx) * 0.08, vy + (y - vy) * 0.08); }
+    g.moveTo(fit.x, vy); g.lineTo(fit.x + fit.w, vy);
+    g.stroke();
+    const labels = [];
+    drawNavExit(SIM_SRC, fit, s, ts, labels, true);
+    drawLabels(labels, fit, s, [navRingRect(fit)]);
+    drawNavRing(fit, s, ts);
+    setFont(12 * s); g.textBaseline = 'alphabetic';
+    g.textAlign = 'right';
+    hudText('SIMULATED VIEW: NO CAMERA', fit.x + fit.w - 8 * s, fit.y + fit.h - 8 * s, '#B4B4B4', s);
+    g.textAlign = 'left';
+  }
+
+  $('nav-start').addEventListener('click', navStartHere);
+  $('nav-out').addEventListener('click', navGuideOut);
+  $('cam-out').addEventListener('click', navGuideOut);
+  // camera blocked (as inside claude.ai): the navigation demo works without one; it shows in the picture above
+  $('n-nav').addEventListener('click', () => navDemo(true));
+  $('nav-stop').addEventListener('click', navStop);
+  $('nav-demo').addEventListener('click', () => navDemo(false));
+  $('nav-auto').addEventListener('click', () => navDemo(true));
+  $('nav-speed').addEventListener('click', () => {
+    navUi.speedIdx = (navUi.speedIdx + 1) % NAV_SPEEDS.length;
+    if (navUi.nav) navUi.nav.setSpeed(NAV_SPEEDS[navUi.speedIdx]);
+    navButtons();
+  });
+  $('nav-up').addEventListener('click', () => {
+    if (!navUi.map) return;
+    const up = navUi.map.toggleUp();
+    $('nav-up').textContent = up === 'heading' ? 'Entry direction up' : 'Heading up';
+    navUi.dirty = true;
+  });
 
   // ------------------------------------------------------------ downloads (claude.ai)
   let downloads = null;
@@ -1454,9 +2176,9 @@
     openFile(f);
     e.target.value = '';
   });
-  $('mark').addEventListener('click', () => { requestOrientation(); markWayOut(0.5, 0.5, 'centre'); });
+  $('mark').addEventListener('click', () => { if (navUi.on) return; requestOrientation(); markWayOut(0.5, 0.5, 'centre'); });
   $('clear-mark').addEventListener('click', () => { clearMark(false); updateStatus(true); });
-  $('whereout').addEventListener('click', whereOut);
+  $('whereout').addEventListener('click', () => { if (navUi.on) navWhereOut(); else whereOut(); });
   view.addEventListener('click', (e) => {
     const src = state.src, fit = state.fit;
     if (!src || !fit) return;
@@ -1469,6 +2191,7 @@
     let nx = (x - fit.x) / fit.w, ny = (y - fit.y) / fit.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
     if (src.mirror) nx = 1 - nx;
+    if (navUi.on) return;            // navigation's marker replaces the mark while it runs
     requestOrientation();
     markWayOut(nx, ny, 'tap');
   });
@@ -1509,12 +2232,19 @@
     get tracker() { return tracker; },
     get results() { return state.results; },
     setFireDoorDetector, markWayOut, clearMark, whereOut, buildStandalone, exitInfo: () => exitInfo(state.src),
+    // tests: 'lose-context' (graphics reset) or 'hang' (a detector run that never ends) in the engine
+    debugEngine: (what, ms) => { if (state.engine && state.engine.debug) state.engine.debug(what, ms); },
     FIREDOOR_STUB,
+    // navigation (demo): the PSNav.Navigator (null until first used) and the page's view of it
+    get nav() { return navUi.nav; },
+    get navUi() { return navUi; },
+    navStartHere, navGuideOut, navDemo, navStop,
   };
 
   // ------------------------------------------------------------ start
+  fixStartWidth();
   updateStatus(true);
   renderLog();
   requestAnimationFrame(frame);
-  setTimeout(loadModels, 30);   // after the first paint
+  loadModels();   // waits for the first paint, then starts the detector worker (or the fallback)
 })();

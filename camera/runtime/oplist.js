@@ -56,6 +56,22 @@
     return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
   }
 
+  /** base64ToArrayBuffer in slices, awaiting yieldFn() between them (cooperative main-thread loading). */
+  async function base64ToArrayBufferAsync(b64, yieldFn) {
+    if (typeof atob !== 'function' || !yieldFn) return base64ToArrayBuffer(b64);
+    const clean = b64.replace(/[^A-Za-z0-9+/=]/g, '');
+    const pad = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+    const out = new Uint8Array(clean.length / 4 * 3 - pad);
+    const STEP = 1 << 18;      // 256 K base64 chars -> 192 KB per slice
+    let o = 0;
+    for (let i = 0; i < clean.length; i += STEP) {
+      const bin = atob(clean.slice(i, i + STEP));
+      for (let j = 0; j < bin.length; j++) out[o++] = bin.charCodeAt(j);
+      await yieldFn();
+    }
+    return out.buffer;
+  }
+
   /** Decode one weight spec into a Float32Array / Int32Array. */
   function decodeWeight(spec, u8) {
     const n = spec.shape.reduce((a, b) => a * b, 1);
@@ -249,6 +265,28 @@
 
   // ---------------------------------------------------------------- model
   function load(json, weights, opts) {
+    const p = prepare(json, weights, opts);
+    for (const spec of p.json.weights) p.W[spec.name] = p.tf.tensor(decodeWeight(spec, p.u8), spec.shape, spec.dtype === 'int32' ? 'int32' : 'float32');
+    return build(p.json, p.W, p.tf);
+  }
+
+  /** load() with `await opts.yieldFn()` after each weight tensor (cooperative main-thread loading). */
+  async function loadAsync(json, weights, opts) {
+    const p = prepare(json, weights, opts);
+    const yieldFn = opts && opts.yieldFn;
+    try {
+      for (const spec of p.json.weights) {
+        p.W[spec.name] = p.tf.tensor(decodeWeight(spec, p.u8), spec.shape, spec.dtype === 'int32' ? 'int32' : 'float32');
+        if (yieldFn) await yieldFn();
+      }
+    } catch (e) {
+      for (const k in p.W) p.W[k].dispose();
+      throw e;
+    }
+    return build(p.json, p.W, p.tf);
+  }
+
+  function prepare(json, weights, opts) {
     opts = opts || {};
     const tf = opts.tf || root.tf;
     if (!tf) throw new Error('PSOpList.load: TF.js not found (pass {tf})');
@@ -257,12 +295,10 @@
     if (json.version !== 1) throw new Error('PSOpList.load: unsupported version ' + json.version);
     const u8 = toU8(weights);
     if (u8.byteLength < json.weights_bytes) throw new Error('PSOpList.load: weights blob too short');
+    return { json, u8, tf, W: {} };
+  }
 
-    const W = {};
-    for (const spec of json.weights) {
-      const vals = decodeWeight(spec, u8);
-      W[spec.name] = tf.tensor(vals, spec.shape, spec.dtype === 'int32' ? 'int32' : 'float32');
-    }
+  function build(json, W, tf) {
     const OPS = makeOps(tf);
     for (const op of json.ops) {
       if (!OPS[op.op]) throw new Error('PSOpList.load: unsupported op ' + op.op);
@@ -333,6 +369,64 @@
           return out;
         });
       },
+      /**
+       * runAsync(input | {name: tensor}, {outputs?, yieldFn}) -> Promise<{name: tf.Tensor}>
+       * Same result as run(), op by op with `await yieldFn()` in between (yieldFn decides whether
+       * to give the event loop a turn), so a page that runs the model on its main thread stays
+       * responsive. Each op runs in its own tf.tidy; nothing leaks if an op throws.
+       */
+      async runAsync(inputs, ropts) {
+        ropts = ropts || {};
+        const yieldFn = ropts.yieldFn;
+        if (!yieldFn) return this.run(inputs, ropts);
+        const want = ropts.outputs || outputNames;
+        if (inputs instanceof tf.Tensor) {
+          if (inputNames.length !== 1) throw new Error('PSOpList.run: model has several inputs');
+          inputs = { [inputNames[0]]: inputs };
+        }
+        for (const n of inputNames) {
+          if (!inputs[n]) throw new Error('PSOpList.run: missing input ' + n);
+        }
+        const keepSet = new Set(want);
+        const env = Object.assign({}, W);
+        const owned = new Set();      // tensors made here (casts, op outputs): disposed unless returned
+        try {
+          for (const n of inputNames) {
+            let t = inputs[n];
+            if (t.dtype !== 'float32') { t = tf.cast(t, 'float32'); owned.add(t); }
+            env[n] = t;
+          }
+          const ops = json.ops;
+          for (let i = 0; i < ops.length; i++) {
+            const op = ops[i];
+            const args = op.inputs.map((t) => {
+              const v = env[t];
+              if (v === undefined) throw new Error('PSOpList: tensor ' + t + ' not computed (op ' + i + ')');
+              return v;
+            });
+            const y = tf.tidy(() => OPS[op.op](op, args, model));
+            env[op.outputs[0]] = y;
+            if (!args.includes(y) && !(op.outputs[0] in W)) owned.add(y);
+            for (const t of op.inputs) {
+              if (lastUse[t] === i && !(t in W) && inputNames.indexOf(t) < 0 && !keepSet.has(t)) {
+                const v = env[t];
+                if (v && !v.isDisposed && v !== y && owned.has(v)) { v.dispose(); owned.delete(v); }
+                delete env[t];
+              }
+            }
+            await yieldFn();
+          }
+          const out = {};
+          for (const n of want) {
+            if (!env[n]) throw new Error('PSOpList.run: unknown output ' + n);
+            out[n] = env[n];
+            owned.delete(env[n]);
+          }
+          return out;
+        } finally {
+          for (const t of owned) { if (!t.isDisposed) t.dispose(); }
+        }
+      },
       dispose() {
         for (const k in W) W[k].dispose();
         for (const s of groupCache.values()) s.forEach((t) => t.dispose());
@@ -348,13 +442,23 @@
     return load(asset.json, w, opts);
   }
 
+  /** loadEmbedded() that yields while decoding and uploading (opts.yieldFn). */
+  async function loadEmbeddedAsync(asset, opts) {
+    const y = opts && opts.yieldFn;
+    const w = asset.weights ? asset.weights : await base64ToArrayBufferAsync(asset.weightsB64, y);
+    return loadAsync(asset.json, w, opts);
+  }
+
   root.PSOpList = {
     version: 1,
     load,
+    loadAsync,
     loadEmbedded,
+    loadEmbeddedAsync,
     decodeWeights,
     decodeWeight: (spec, buf) => decodeWeight(spec, toU8(buf)),
     base64ToArrayBuffer,
+    base64ToArrayBufferAsync,
     samePads,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

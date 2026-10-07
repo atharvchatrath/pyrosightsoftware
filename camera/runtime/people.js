@@ -58,6 +58,10 @@
   let faceModel = null, faceAnchors = null;
   let opts0 = Object.assign({}, DEFAULTS);
   let backendInfo = null;
+  // cooperative mode (a page running the models on its main thread): an async function that gives
+  // the event loop a turn when the current slice of work has run long enough; null = run straight through
+  let yieldFn = null;
+  let personStageList = null;     // the person graph cut into short stages, for yieldFn
 
   // -------------------------------------------------------------- backend
   /**
@@ -74,13 +78,22 @@
     // TF.js caches its WebGL capability flags on the first attempt, so the
     // software-rasteriser permission has to be set before trying WebGL at all.
     if (o.allowSoftwareWebGL) tfRef.env().set('SOFTWARE_WEBGL_ENABLED', true);
+    // In a Web Worker TF.js makes its WebGL context on an OffscreenCanvas, except on Safari, where it
+    // insists on a <canvas> (which a worker does not have) because Safari's offscreen WebGL lacked
+    // fences. Safari 17+ has offscreen WebGL2: use it, with fences off (a blocking read is fine in a worker).
+    if (o.worker && typeof OffscreenCanvas !== 'undefined') {
+      try {
+        if (tfRef.env().getBool('IS_SAFARI')) { tfRef.env().set('IS_SAFARI', false); tfRef.env().set('WEBGL_FENCE_API_ENABLED', false); }
+      } catch (e) { /* flag missing: leave TF.js defaults */ }
+    }
     const tries = o.prefer === 'cpu' ? ['cpu'] : ['webgl', 'cpu'];
     for (const b of tries) {
       try {
         if (!(await tfRef.setBackend(b))) continue;
         await tfRef.ready();
         const t = tfRef.tidy(() => tfRef.add(tfRef.ones([2, 2]), 1).sum());
-        const v = (await t.data())[0];
+        // a GPU read that never completes (seen with broken offscreen WebGL) must not hang the start
+        const v = (await Promise.race([t.data(), new Promise((r) => setTimeout(() => r([NaN]), o.checkTimeoutMs || 15000))]))[0];
         t.dispose();
         if (v !== 8) continue;
         backendInfo = { backend: b, renderer: b === 'webgl' ? glRenderer(tfRef) : 'cpu' };
@@ -105,9 +118,21 @@
     return root.PSOpList.base64ToArrayBuffer(a.weightsB64);
   }
 
+  async function assetBufferAsync(a) {
+    if (a.weights || !yieldFn || !root.PSOpList.base64ToArrayBufferAsync) return assetBuffer(a);
+    return root.PSOpList.base64ToArrayBufferAsync(a.weightsB64, yieldFn);
+  }
+
+  async function decodeWeightsAsync(specs, buf) {
+    if (!yieldFn) return root.PSOpList.decodeWeights(specs, buf);
+    const out = {};
+    for (const s of specs) { out[s.name] = root.PSOpList.decodeWeight(s, buf); await yieldFn(); }
+    return out;
+  }
+
   async function loadPerson(asset) {
     const doc = typeof asset.json === 'string' ? JSON.parse(asset.json) : asset.json;
-    const vals = root.PSOpList.decodeWeights(doc.packed, assetBuffer(asset));
+    const vals = await decodeWeightsAsync(doc.packed, await assetBufferAsync(asset));
     let total = 0;
     for (const s of doc.weightSpecs) total += 4 * s.shape.reduce((a, b) => a * b, 1);
     const data = new Uint8Array(total);
@@ -117,10 +142,78 @@
       data.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), off);
       off += v.byteLength;
     }
+    if (yieldFn) await yieldFn(true);
     const model = await tf.loadGraphModel(tf.io.fromMemory({
       modelTopology: doc.modelTopology, weightSpecs: doc.weightSpecs, weightData: data.buffer,
     }));
     return { model, doc };
+  }
+
+  /**
+   * Cut the person graph into short stages for cooperative runs: a cut after node i (in topological
+   * order) is allowed where at most maxFrontier tensors made so far are still needed later; one stage
+   * = GraphModel.execute(frontier before, frontier after). Same arithmetic as one execute() (checked
+   * bit-exact in Node on the CPU backend), with a chance to yield between stages.
+   */
+  function personStages(doc, maxFrontier) {
+    const nodes = doc.modelTopology.node;
+    const byName = new Map(nodes.map((n) => [n.name, n]));
+    const live = (ref) => { const n = byName.get(ref.split(':')[0]); return n && n.op !== 'Const'; };
+    const refsOf = (n) => (n.input || []).filter((r) => r[0] !== '^' && live(r)).map((r) => (r.endsWith(':0') ? r.slice(0, -2) : r));
+    const deps = new Map(), cons = new Map();
+    for (const n of nodes) {
+      if (n.op === 'Const') continue;
+      const ds = [...new Set(refsOf(n).map((r) => r.split(':')[0]))];
+      deps.set(n.name, ds);
+      for (const d of ds) { if (!cons.has(d)) cons.set(d, []); cons.get(d).push(n.name); }
+    }
+    const order = [], indeg = new Map([...deps].map(([k, v]) => [k, v.length]));
+    const q = [...deps.keys()].filter((k) => indeg.get(k) === 0);
+    while (q.length) {
+      const k = q.shift(); order.push(k);
+      for (const c of cons.get(k) || []) { indeg.set(c, indeg.get(c) - 1); if (indeg.get(c) === 0) q.push(c); }
+    }
+    if (order.length !== deps.size) return null;              // not a DAG we understand: run it whole
+    const pos = new Map(order.map((k, i) => [k, i]));
+    const outs = [doc.outputs.scores, doc.outputs.boxes];
+    const lastUse = new Map();
+    for (const k of order) for (const r of refsOf(byName.get(k))) lastUse.set(r, Math.max(lastUse.has(r) ? lastUse.get(r) : -1, pos.get(k)));
+    for (const o of outs) lastUse.set(o, Infinity);
+    const made = (r) => pos.get(r.split(':')[0]);
+    const frontier = (i) => [...lastUse].filter(([r, lu]) => made(r) <= i && lu > i).map(([r]) => r);
+    const stages = [];
+    let prev = [doc.input.name];
+    for (let i = 0; i < order.length - 1; i++) {
+      const f = frontier(i);
+      // GraphModel.execute() takes one fed tensor per node: no cut where a multi-output node's
+      // second, third... output (an 'X:1' reference) would have to be fed
+      if (f.length > maxFrontier || f.some((r) => r.indexOf(':') >= 0)) continue;
+      stages.push({ inputs: prev, outputs: f });
+      prev = f;
+    }
+    stages.push({ inputs: prev, outputs: outs });
+    return stages;
+  }
+
+  async function executePersonStaged(x) {
+    const inName = personInfo.input.name;
+    let cur = { [inName]: x };
+    try {
+      for (const st of personStageList) {
+        const r = personModel.execute(cur, st.outputs);
+        const arr = Array.isArray(r) ? r : [r];
+        const next = {};
+        st.outputs.forEach((o, i) => { next[o] = arr[i]; });
+        const keep = new Set(arr);
+        for (const t of Object.values(cur)) if (t !== x && !keep.has(t)) t.dispose();
+        cur = next;
+        await yieldFn();
+      }
+      return [cur[personInfo.outputs.scores], cur[personInfo.outputs.boxes]];
+    } catch (e) {
+      for (const t of Object.values(cur)) if (t !== x && !t.isDisposed) t.dispose();
+      throw e;
+    }
   }
 
   /** MediaPipe SsdAnchorsCalculator, face_detection_short_range options. */
@@ -144,7 +237,10 @@
 
   async function init(tfRef, assets, options) {
     tf = tfRef;
-    opts0 = Object.assign({}, DEFAULTS, options || {});
+    options = Object.assign({}, options || {});
+    yieldFn = typeof options.yieldFn === 'function' ? options.yieldFn : null;
+    delete options.yieldFn;
+    opts0 = Object.assign({}, DEFAULTS, options);
     if (!root.PSOpList) throw new Error('PSPeople.init: load oplist.js first');
     assets = assets || root.PS_PEOPLE_ASSETS;
     dispose();   // re-init frees the previous models
@@ -153,14 +249,20 @@
       const p = await loadPerson(assets.person);
       personModel = p.model;
       personInfo = p.doc;
+      personStageList = null;
+      if (yieldFn) { try { personStageList = personStages(p.doc, 32); } catch (e) { personStageList = null; } }
     }
+    if (yieldFn) await yieldFn(true);
     if (assets.face) {
-      faceModel = root.PSOpList.loadEmbedded(assets.face, { tf });
+      faceModel = yieldFn && root.PSOpList.loadEmbeddedAsync ? await root.PSOpList.loadEmbeddedAsync(assets.face, { tf, yieldFn })
+        : root.PSOpList.loadEmbedded(assets.face, { tf });
       faceAnchors = blazeFaceAnchors();
       if (faceAnchors.length !== 896) throw new Error('anchor count ' + faceAnchors.length);
     }
-    // warm-up (shader compilation on WebGL)
-    const z = tf.zeros([240, 320, 3], 'int32');
+    // warm-up (shader compilation on WebGL); options.warmup = [H, W] of the frames to come
+    if (yieldFn) await yieldFn(true);
+    const wu = options.warmup || [240, 320];
+    const z = tf.zeros([wu[0], wu[1], 3], 'int32');
     await detect(z);
     z.dispose();
     return { backend: tf.getBackend(), loadMs: now() - t0, person: !!personModel, face: !!faceModel,
@@ -179,9 +281,11 @@
 
   async function runPerson(pixels, o) {
     const x = personInput(pixels);
-    const [sc, bx] = personModel.execute({ [personInfo.input.name]: x },
-      [personInfo.outputs.scores, personInfo.outputs.boxes]);
-    x.dispose();
+    let sc, bx;
+    try {
+      [sc, bx] = yieldFn && personStageList ? await executePersonStaged(x)
+        : personModel.execute({ [personInfo.input.name]: x }, [personInfo.outputs.scores, personInfo.outputs.boxes]);
+    } finally { x.dispose(); }
     const [scores, boxes] = await Promise.all([sc.data(), bx.data()]);
     const K = sc.shape[2];
     sc.dispose(); bx.dispose();
@@ -250,8 +354,8 @@
 
   async function runFace(pixels, o) {
     const { x, lb } = faceInput(pixels);
-    const out = faceModel.run(x);
-    x.dispose();
+    let out;
+    try { out = yieldFn ? await faceModel.runAsync(x, { yieldFn }) : faceModel.run(x); } finally { x.dispose(); }
     const [reg, cls] = await Promise.all([out.regressors.data(), out.classificators.data()]);
     tf.dispose(Object.values(out));
     return decodeFaces(reg, cls, o).map((d) => unletterbox(d, lb));
@@ -422,6 +526,7 @@
         ms.person = now() - t;
       }
       if (faceModel && o.face) {
+        if (yieldFn) await yieldFn(true);
         const t = now();
         faces = await runFace(pixels, o);
         ms.face = now() - t;
@@ -452,9 +557,11 @@
     DEFAULTS, setupBackend, init, detect, merge, dispose,
     // exposed for tests / other modules
     _internals: { blazeFaceAnchors, decodeFaces, decodePerson, weightedNms, faceInput, personInput,
-      addDistance, distLabel, focalPx, runFace, runPerson },
+      addDistance, distLabel, focalPx, runFace, runPerson, personStages },
     get personModel() { return personModel; },
     get backendInfo() { return backendInfo; },
+    get cooperative() { return !!yieldFn; },
+    get personStages() { return personStageList ? personStageList.length : 0; },
     get faceModel() { return faceModel; },
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

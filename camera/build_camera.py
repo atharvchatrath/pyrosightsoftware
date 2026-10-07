@@ -14,13 +14,19 @@ Steps
   3. build/firedoor/meta.json: name, credits, decode thresholds (fire 0.50 from firedoor/MODEL.md; door 0.50,
      stricter than MODEL.md's 0.35, see FIREDOOR_META) and the FIRE hysteresis (on at 0.50, kept while >= 0.35)
   4. page/build_page.py --firedoor ... --out dist: inlines tf.min.js, oplist.js, people.js,
-     people_assets.js, the fire/door model + firedoor/decode.js, motion.js, app.js into page.html
+     people_assets.js, the fire/door model + firedoor/decode.js, motion.js, app.js and the
+     navigation module nav/dist/ps_nav.js (built by nav/build_nav.py) into page.html
   5. checks on both outputs (the build fails if one does not hold):
      - size under 15 MB (base64 counted)
      - <title>PyroSight Camera</title>
      - no external resource in the markup: no <script src>, <link href>, <img src>, <iframe>,
-       @import or url(...) outside data:, and no fetch / XMLHttpRequest / import() / http(s)
-       in the page's own code (app.js, motion.js, oplist.js, people.js, decode.js)
+       @import or url(...) outside data:, and no fetch / XMLHttpRequest / import() / http(s) /
+       WebSocket / sendBeacon / importScripts in the page's own code (app.js, motion.js, oplist.js,
+       people.js, engine.js, decode.js, nav/dist/ps_nav.js)
+     - Worker: only app.js makes one, exactly once, from a blob: URL of a Blob built from the page's
+       own <script data-ps-part> texts (no URL string, nothing fetched); no SharedWorker / service worker
+     - TF.js and the models are <script type="text/plain"> (not run on the page's main thread);
+       the scripts that do run there stay small (MAIN_THREAD_MAX_BYTES)
      - the fragment has no doctype/html/head/body wrapper; the standalone page has them
      http(s) strings that remain inside tf.min.js (licence/doc links, core-js URL feature
      tests, TF.js's unused HTTP model loader) are listed in dist/pyrosight_camera.build.json.
@@ -57,7 +63,12 @@ FIREDOOR_META = {
     'zoom': {'frac': 0.5, 'on': 0.60},
 }
 
-OWN_CODE = ['ps-oplist', 'ps-people', 'ps-motion', 'ps-app']
+OWN_CODE = ['ps-oplist', 'ps-people', 'ps-engine', 'ps-motion', 'ps-app', 'ps-nav']
+TEXT_PARTS = {'ps-tf', 'ps-people-assets', 'ps-firedoor-model'}   # type="text/plain": run in the worker
+# executed on the main thread while the page loads: page code ~210 kB + the navigation module
+# (camera/nav/dist/ps_nav.js, 195 kB, which must run on the page: it reads the motion sensors and
+# draws the map); measured 5-6 ms to run there (20-50 ms at 4-6x CPU throttling)
+MAIN_THREAD_MAX_BYTES = 450_000
 
 
 def run(cmd, **kw):
@@ -71,8 +82,12 @@ def strip_scripts(html):
 
 
 def script_bodies(html):
-    return {m.group(1): m.group(2) for m in
-            re.finditer(r'<script data-ps-part id="([^"]+)"[^>]*>(.*?)</script>', html, flags=re.S)}
+    """Each part's text; TF.js and the models are split over <script data-ps-part id=X> and
+    <script data-ps-part data-ps-of=X> elements (page/build_page.py CHUNK), joined here."""
+    bodies = {}
+    for m in re.finditer(r'<script data-ps-part (?:id|data-ps-of)="([^"]+)"[^>]*>(.*?)</script>', html, flags=re.S):
+        bodies[m.group(1)] = bodies.get(m.group(1), '') + m.group(2)
+    return bodies
 
 
 def check_page(path, standalone):
@@ -81,6 +96,8 @@ def check_page(path, standalone):
     problems = []
     if size >= MAX_BYTES:
         problems.append('size %d >= %d' % (size, MAX_BYTES))
+    if not html.isascii():
+        problems.append('page is not pure ASCII (non-ASCII text makes the browser decode it far slower)')
     if '<title>%s</title>' % TITLE not in html:
         problems.append('title is not "%s"' % TITLE)
     markup = strip_scripts(html)
@@ -98,22 +115,38 @@ def check_page(path, standalone):
         problems.append('fragment has a document wrapper: %s' % head_tags)
     bodies = script_bodies(html)
     own = {k: v for k, v in bodies.items() if k in OWN_CODE}
-    fd = bodies.get('ps-firedoor', '')
-    # decode.js is appended to the fire/door model script; check only its code part
-    # (its first line is the model data: {json, weightsB64}, one line from export_oplist.py --js)
-    fd_code = fd.split('\n', 1)[1] if fd.startswith('(globalThis.PS_OPLIST_ASSETS') else fd
-    own['ps-firedoor(decode/meta)'] = fd_code
+    # ps-firedoor is decode.js + the model's metadata; the model data itself is ps-firedoor-model
+    own['ps-firedoor(decode/meta)'] = bodies.get('ps-firedoor', '')
     for k, v in own.items():
         for pat, what in [(r'\bfetch\s*\(', 'fetch('), (r'XMLHttpRequest', 'XMLHttpRequest'), (r'\bimport\s*\(', 'import('),
-                          (r'https?://', 'http(s) URL'), (r'\bnew\s+(Web)?Worker\s*\(', 'Worker'), (r'WebSocket', 'WebSocket'),
-                          (r'sendBeacon', 'sendBeacon')]:
+                          (r'https?://', 'http(s) URL'), (r'WebSocket', 'WebSocket'), (r'sendBeacon', 'sendBeacon'),
+                          (r'importScripts', 'importScripts'), (r'SharedWorker', 'SharedWorker'), (r'serviceWorker', 'serviceWorker')]:
             if re.search(pat, v):
                 problems.append('%s has %s' % (k, what))
+    # the one worker: app.js, new Worker(url) with url = URL.createObjectURL(blob of the page's own scripts)
+    for k, v in own.items():
+        n = len(re.findall(r'\bnew\s+Worker\s*\(', v))
+        if k != 'ps-app' and n:
+            problems.append('%s makes a Worker' % k)
+        if k == 'ps-app':
+            if n != 1 or not re.search(r'\bnew\s+Worker\s*\(\s*url\s*\)', v) or not re.search(r'const url = URL\.createObjectURL\(blob\)', v) \
+                    or not re.search(r"new Blob\(\[blob, text\.slice\(i, end\)\]", v):
+                problems.append('ps-app: the Worker must be made once, from a blob: URL of the page\'s own script texts')
+    attrs = {m.group(1): m.group(2) for m in re.finditer(r'<script data-ps-part id="([^"]+)"([^>]*)>', html)}
+    for k in TEXT_PARTS:
+        if k in attrs and 'type="text/plain"' not in attrs[k]:
+            problems.append('%s should be type="text/plain" (not run on the main thread)' % k)
+    for m in re.finditer(r'<script data-ps-part data-ps-of="([^"]+)"([^>]*)>', html):
+        if m.group(1) not in TEXT_PARTS or m.group(1) not in attrs or 'type="text/plain"' not in m.group(2):
+            problems.append('continuation element of %s must follow a text/plain part and be type="text/plain"' % m.group(1))
+    executed = {k: len(v.encode()) for k, v in bodies.items() if k in attrs and 'type=' not in attrs[k]}
+    if sum(executed.values()) > MAIN_THREAD_MAX_BYTES:
+        problems.append('scripts run on the main thread are %d bytes (> %d): %s' % (sum(executed.values()), MAIN_THREAD_MAX_BYTES, executed))
     tf_urls = sorted(set(re.findall(r'https?://[^\s"\'\\)<>]*', bodies.get('ps-tf', ''))))
     tf_fetch = len(re.findall(r'\bfetch\s*\(', bodies.get('ps-tf', '')))
     return {'file': os.path.relpath(path, HERE) if path.startswith(HERE + os.sep) else path, 'bytes': size, 'mb': round(size / 1e6, 3),
             'sha256': hashlib.sha256(html.encode()).hexdigest(), 'title_ok': '<title>%s</title>' % TITLE in html,
-            'parts': sorted(bodies), 'problems': problems,
+            'parts': sorted(bodies), 'problems': problems, 'main_thread_script_bytes': executed,
             'tfjs_http_strings': tf_urls, 'tfjs_fetch_calls': tf_fetch}
 
 

@@ -18,7 +18,7 @@ const { execSync } = require('child_process');
 const pw = require(path.join(execSync('npm root -g').toString().trim(), 'playwright'));
 
 const CAMERA = path.join(__dirname, '..');
-const DIST = path.join(CAMERA, 'dist', 'pyrosight_camera.html');
+const DIST_DEFAULT = path.join(CAMERA, 'dist', 'pyrosight_camera.html');
 const OUT = path.join(__dirname, 'out');
 const SHOTS = path.join(CAMERA, 'shots');
 const MAN = JSON.parse(fs.readFileSync(path.join(OUT, 'e2e_clips.json')));
@@ -27,10 +27,11 @@ fs.mkdirSync(SHOTS, { recursive: true });
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
 const SECS = +opt('--secs', 60);
+const DIST = path.resolve(opt('--page', DIST_DEFAULT));   // --page: another build (e.g. an older one, for comparison)
 const ONLY = opt('--only', null);
 const CPU_ONLY = argv.includes('--cpu-only');
 const NO_CPU = argv.includes('--no-cpu');
-const RESULTS = path.join(OUT, opt('--out', 'e2e_results.json'));
+const RESULTS = path.resolve(OUT, opt('--out', 'e2e_results.json'));   // a bare name goes into tests/out
 
 const SPEECH_STUB = `
   window.__spoken = [];
@@ -243,7 +244,8 @@ async function runClip(name, cpu) {
     const all = await page.evaluate(() => (window.__psDetections || []).slice());
     const recs = all.filter((r) => r.i > i0);
     const fin = await page.evaluate(() => { const s = window.PSCamera.state; return {
-      numTensors: tf.memory().numTensors, fps: s.fps, errors: s.stats.errors.slice(0, 5), log: s.log.slice(0, 12).map((l) => l.text),
+      // TF.js runs in the page's detector worker now (no tf global here): the count it reports with each update
+      numTensors: s.numTensors != null ? s.numTensors : (window.tf ? tf.memory().numTensors : null), engine: s.engineMode, fps: s.fps, errors: s.stats.errors.slice(0, 5), log: s.log.slice(0, 12).map((l) => l.text),
       status: { engine: document.getElementById('s-engine').textContent, fd: document.getElementById('s-fd').textContent,
         speed: document.getElementById('s-speed').textContent, seen: document.getElementById('s-seen').textContent },
       overflow: document.documentElement.scrollWidth - window.innerWidth }; });

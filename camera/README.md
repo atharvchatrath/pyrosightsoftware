@@ -9,19 +9,50 @@ camera), live, inside the browser:
 | fire / flames | **PURPLE** `#C850FF` | `FIRE` |
 | a door | **GREEN** `#28FF50` | `DOOR` |
 | the way out you marked ("Mark way out", or tap the picture; a tap on a DOOR box marks that door) | **GREEN** `#28FF50` | `EXIT`, or an edge arrow `EXIT 120°` when you have turned away |
+| the way out as the navigation estimates it (while **Navigation (demo)** runs; it replaces the mark) | **GREEN** `#28FF50` | `EXIT 5M` sized by distance, `EXIT? 5M` dashed when unsure, an edge arrow when out of view, no box but `FOLLOW HOSE` when unreliable |
 
 The colours are `PS_COLOR_PERSON / PS_COLOR_FIRE / PS_COLOR_EXIT` from
 `core/include/pyrosight/ps_display.h`. **Video never leaves the device**: the three detectors run in
-the page with TensorFlow.js, nothing is fetched or uploaded at run time, and the page says so.
+the page with TensorFlow.js (in a background worker made from the page's own text, or on the page
+itself where workers are not allowed), nothing is fetched or uploaded at run time, and the page says so.
 
 It also has spoken alerts (off by default, the device's phrases from `core/src/ps_alerts.c`), an
 "Eyepiece view" (grey, 160 px wide, labelled *look-alike, not thermal*), "Where's the way out?",
-a photo/video fallback when the camera is blocked, and "Save this page" when it runs as a claude.ai
-artifact with the downloads capability.
+a photo/video fallback when the camera is blocked, "Save this page" when it runs as a claude.ai
+artifact with the downloads capability, and a **demo navigation** (below).
+
+## Navigation (demo)
+
+The card under the camera runs the eyepiece's own way-back-out navigation: `core/src/ps_nav.c`,
+`ps_config.c` and `ps_alerts.c` compiled to plain JavaScript (`nav/`, global `PSNav`, see
+`nav/README.md`; parity with the native C build: 0 integer mismatches over 250 k commands). It
+counts steps and turns from where you marked the entry, keeps breadcrumbs, and rates its own
+confidence (GOOD, DEGRADED below 0.6, UNRELIABLE below 0.3).
+
+* **Start here (mark entry)** uses the phone's motion sensors (asking for permission on iOS, from
+  that tap only), else the camera's turns as the heading with "Hold to walk" for steps (when the
+  camera or a video runs), else a **demo walk**: a simulated firefighter with a simulated motion
+  sensor whose estimate drifts like a real one. The card says which input it uses and why.
+  **Demo walk** / **Auto demo** start the simulation directly (works with no camera at all,
+  as inside claude.ai); **Guide me out** makes the demo walker follow the arrow back, or asks the
+  device for the way ("Way out is ahead, to your left."); **Stop** turns navigation off.
+* The card shows the device's ring (arrow to the next breadcrumb, distance, colour by confidence),
+  the phrase, distances, confidence and a map (estimated path, the way back; in the demo also the
+  floor plan and the true path).
+* While it runs, the green way-out marker in the picture comes from the navigation instead of
+  "Mark way out" (the mark returns after Stop): an EXIT box sized by distance when the way out is
+  in view (device `draw_exit()` geometry), dashed `EXIT?` when DEGRADED, an edge arrow when it is
+  not in view, and no box but `FOLLOW HOSE` when UNRELIABLE. The eyepiece view adds the device's
+  ring at the top; with no camera the picture area shows a plain simulated eyepiece view.
+* Its phrases go through the page's voice toggle, speech queue (below fire and people) and the
+  Spoken alerts log.
+* It is a demo: a phone in your hand is not the body-worn sensor, real-sensor walking was only
+  tested with emulated sensor events, and inside claude.ai the motion sensors are expected to be
+  blocked (then it runs the demo walk). Measured results are under "Navigation results" below.
 
 ## Open it
 
-* **As a file:** double-click `dist/pyrosight_camera.html` (8.2 MB, works offline from `file://`),
+* **As a file:** double-click `dist/pyrosight_camera.html` (8.5 MB, works offline from `file://`),
   press **Start camera**, allow the camera. Chrome, Edge and Firefox allow the camera on local files.
   A laptop/front camera is shown mirrored; the back camera of a phone is not.
 * **As a claude.ai artifact:** publish `dist/pyrosight_camera.fragment.html` (the same page without
@@ -53,16 +84,32 @@ weights, NHWC outputs, base64) to `build/firedoor/firedoor.oplist.js`, writes th
 `build/firedoor/meta.json` (thresholds fire 0.50 / door 0.50, the FIRE hysteresis: on at 0.50,
 kept while an overlapping box stays at 0.35 or more, and the centre zoom pass: middle 50 % of the
 frame, FIRE from it at 0.60 or more; see `firedoor/MODEL.md` and "Fire/door settings" below), then runs
-`page/build_page.py`, which inlines, in order: TF.js 4.22.0 (`tf.min.js`), `runtime/oplist.js`,
-`runtime/people.js`, `runtime/dist/people_assets.js` (person + face weights), the fire/door model +
-`firedoor/decode.js`, `page/motion.js`, `page/app.js`, into `page/page.html`. It then checks both
-outputs and stops on any failure:
+`page/build_page.py`, which inlines, in order: `runtime/oplist.js`, `runtime/people.js`,
+`firedoor/decode.js` + settings, `runtime/engine.js`, `page/motion.js`, `page/app.js` (all small, run
+by the browser as normal scripts), then three **`<script type="text/plain">` blocks that the browser
+does not parse or run**: TF.js 4.22.0 (`tf.min.js`), `runtime/dist/people_assets.js` (person + face
+weights) and the fire/door model, each split over elements of at most 128 k characters
+(`id="ps-tf"`, then `data-ps-of="ps-tf"`, ...) so the browser's HTML parser can pause between them.
+`app.js` hands those texts, with the small scripts, to a background worker (see "Responsiveness"
+below). The page is written as **pure ASCII** (`\uXXXX` escapes in scripts, `&#x...;` in the
+markup): Chromium decodes an all-ASCII page on a fast 8-bit path, and the few non-ASCII characters
+had made it decode the 8 MB page at about a third of that speed, in tasks of 250+ ms at 4x CPU
+throttling. It then checks both outputs and stops on any failure:
 
 * size under 15 MB (base64 counted);
 * `<title>PyroSight Camera</title>`;
 * no external resource in the markup (no `<script src>`, `<link>`, `<img src>` other than `data:`,
   `<iframe>`, `@import`, `url(...)`), and no `fetch`, `XMLHttpRequest`, `import()`, `WebSocket`,
-  `sendBeacon`, `Worker` or `http(s)://` in the page's own code (app, motion, oplist, people, decoder);
+  `sendBeacon`, `importScripts`, `SharedWorker`, `serviceWorker` or `http(s)://` in the page's own
+  code (app, engine, motion, oplist, people, decoder, the navigation module `nav/dist/ps_nav.js`);
+* exactly one `new Worker(url)`, in `app.js`, where `url` is `URL.createObjectURL(blob)` of a `Blob`
+  built only from the page's own script texts (no network: a `blob:` URL of the page's own text);
+* TF.js and the two model blocks (and every continuation element) are `type="text/plain"`, and
+  the scripts the browser runs on load stay under 450 kB (`main_thread_script_bytes` in the build
+  report; 406 kB now: page code 211 kB + the navigation module 195 kB, which has to run on the page
+  because it reads the motion sensors and draws the map; it takes 5-6 ms to run there, 20-50 ms at
+  4-6x CPU throttling);
+* the page is pure ASCII;
 * the fragment has no doctype/html/head/body wrapper; the standalone page has them.
 
 The 16 `http(s)` strings left are inside `tf.min.js` (licence and docs links, core-js URL feature
@@ -71,7 +118,7 @@ tests, TF.js's HTTP model loader that the page never calls); they are listed in
 `file:`, `data:` and `blob:`.
 
 Page parts (MB): TF.js 1.47, person + face models 5.16, fire/door model + decoder 1.43, page code and
-markup 0.16. Total 8.23 MB.
+markup and engine 0.24, navigation module 0.19. Total 8.50 MB.
 
 ## Tests
 
@@ -82,9 +129,15 @@ node tests/firedoor_parity.js build/firedoor/firedoor # op-list runtime (TF.js C
 python3 tests/make_e2e_clips.py --clips-dir DIR       # barcoded fake-camera clips (~0.8 GB, regenerable)
 taskset -c 2,3 node tests/e2e_test.js --secs 60       # Playwright + fake camera, WebGL and CPU fallback
 taskset -c 2,3 node tests/e2e_layout.js               # 390 px dark / desktop light screenshots
+taskset -c 2,3 node tests/responsiveness_test.js --configs webgl,cpu,webgl-4x,webgl-main,csp-iframe-noworker
+                                                      # click latency + long tasks while loading/detecting
 python3 tests/face_scale_check.py DIR && node tests/face_scale_check.js DIR   # distance-label sanity check
 node tests/e2e_shots.js                               # key screenshots from single-image clips
 cd page && node tests/motion_test.js && node tests/browser_test.js   # the page's own suites (still pass)
+cd page && ONLY=nav,navcam taskset -c 2,3 node tests/browser_test.js # navigation in the page (43 checks)
+cd nav && node tests/geom_test.js && node tests/walker_test.js && node tests/stepdetect_test.js \
+       && node tests/parity_test.js && node tests/pw_demo_test.js   # the navigation module itself
+taskset -c 2,3 node tests/responsiveness_test.js --nav --configs webgl,cpu,webgl-4x   # with the auto demo running
 ```
 
 The page agent's own suites were re-run after the fix round (2026-10-04): `page/tests/motion_test.js`
@@ -98,7 +151,169 @@ The e2e clips are slideshows of held-out test images (3 s each at 10 fps, 640x48
 number barcode in the bottom 8 rows. A capture hook set by the test reads it from the exact frame
 handed to the detectors, so every detector update is compared with the ground-truth boxes of the
 image on screen. The page exposes `window.__psLastDetections` and `window.__psDetections` (the last
-1000 updates: boxes normalised to the camera frame, per-model ms, backend, `tf.memory().numTensors`).
+1000 updates: boxes normalised to the camera frame, per-model ms, backend, the engine's
+`tf.memory().numTensors` as `tensors`, and `engine`: `'worker'` or `'main'`). With the worker there is
+no `tf` global on the page; `PSCamera.state.numTensors` has the count.
+
+## Responsiveness (2026-10-05: the detectors moved off the page's main thread)
+
+Before this change the page parsed TF.js, decoded the 6.6 MB of models and ran every detector on the
+page's main thread: a tap could wait 5-6 s while the models loaded (25-42 s with Chromium's 4x/6x CPU
+throttling), and on the CPU backend 80-99 % of the time during detection. Now:
+
+* **The detectors run in a Web Worker** (`runtime/engine.js`, started by `page/app.js` from a `Blob`
+  of the page's own script texts, so nothing is fetched). The page's main thread never parses TF.js
+  or the models (they are `type="text/plain"`), never waits for a detector, and sends one RGBA frame
+  per update (transferred, not copied). TF.js uses WebGL on an `OffscreenCanvas` in the worker, else
+  its CPU backend. A lost WebGL context restarts the worker (tested with `PSCamera.debugEngine('lose-context')`:
+  boxes back after 21 s, tensors flat at 456; in the fallback the engine restarts on the page, boxes
+  back after 23 s, and 3 tensors of the lost context stay counted: 456 -> 459, then flat).
+* **Stalls**: the worker posts a beat every second; a detector that goes silent (8 s on WebGL, 30 s
+  on the CPU, or 3x the longest silence seen while it worked; 20 s for the fallback's yield points)
+  is restarted; boxes from a run 3x longer than usual are dropped ("Detection paused…"). A first
+  update after a start is not judged by a fixed 20 s, and a stall restart is never repeated
+  without a completed update in between (a slow phone keeps trying instead of reloading forever).
+  Three graphics resets or stalls switch to the CPU only when no WebGL update completed in between.
+* **Fallback on the main thread** when the worker cannot start (a CSP with `worker-src 'none'`, no
+  `Worker`, an error or 20 s without a sign of life, a custom fire/door detector; a worker without
+  WebGL on `OffscreenCanvas` uses TF.js's CPU backend instead): after the first paint, TF.js and the
+  models run as `blob:` scripts (compiled off the main thread) or else inline scripts, each started
+  only after 1 s without a tap or key (at most 8 s of waiting: running one blocks the page for
+  0.3-0.5 s on a slow phone), and every model
+  load, warm-up and detector run gives the browser a turn at least every 30 ms and a rendered frame
+  at least every 50 ms (the person model as 330 stages, the face and fire/door models op by op,
+  bit-exact with the one-shot runs), with an idle gap after each update. The status line then says
+  "on the page itself (no background worker here: taps may lag)". `?engine=main`, `#engine=main` or
+  `window.PS_ENGINE = 'main'` forces it (tests).
+* **The page loads lighter:** pure ASCII (see Rebuild), the text blocks split so the HTML parser can
+  pause, and the turn tracker limited to about 30 % of the main thread (on a slow CPU it runs less
+  often, down to 5 times a second, instead of starving taps). The buttons work from the first paint;
+  the picture shows "LOADING DETECTORS…" and the status "Loading detectors…" until the first boxes.
+
+Measured with `tests/responsiveness_test.js` (extends the lead's freeze check): headless Chromium,
+390x844 phone viewport, fake camera (`e2e_still_face.y4m`), all Chromium processes on 2 of this
+machine's 4 cores (`taskset -c 2,3`), no GPU (WebGL = SwiftShader). Clicks at 0.5, 0.6, 1.0 ("Start
+camera"), 1.1, 2, 3, 5, 5.2 and 8 s after navigation and 16 more while boxes come in; **click ->
+visible** = the click event's timestamp to the first rendered frame after the page's handler ran.
+"Worst" counts handled clicks on the intended button; the old page also lost or misdirected 1-6 taps
+per run (handled seconds later, after the layout had moved). Long tasks are main-thread tasks over
+50 ms after the first paint. Results: `tests/out/responsiveness.json` (old page = the build before
+this change, same harness, same day).
+
+| configuration | old page: "Start camera" / worst click | longest task (>200 ms) | blocked in detection | new page: "Start camera" / worst click | longest task (>200 ms) | blocked in detection |
+|---|---|---|---|---|---|---|
+| WebGL | 5347 / 5746 ms | 5756 ms (3) | 0.3 % | 12 / 29 ms | 64 ms (0) | 0 % |
+| CPU only (no WebGL) | 5271 / 5773 ms | 5774 ms (13) | 79.6 % | 20 / 47 ms | 61 ms (0) | 0 % |
+| WebGL, 4x CPU throttling | 340 / 8279 ms | 8744 ms (7) | 19.2 % | 31 / 146 ms | 175 ms (0) | 7.9 % |
+| WebGL, 6x | 858 / 7633 ms | 9162 ms (11) | 57.6 % | 118 / 197 ms | 216 ms (1) | 20.8 % |
+| CPU only, 4x | 210 / 25621 ms | 25477 ms (9) | 93.2 % | 45 / 181 ms | 180 ms (0) | 13.2 % |
+| CPU only, 6x | 363 / 41868 ms | 42097 ms (10) | 99.4 % | 59 / 275 ms | 207 ms (1) | 34.6 % |
+| sandboxed iframe, strict CSP (`script-src 'unsafe-inline' blob:; worker-src blob:` ...) | 5384 / 5788 ms | 5779 ms (4) | 3.6 % | 13 / 26 ms | 80 ms (0) | 0 % |
+| same, 4x | 286 / 7979 ms | 8629 ms (6) | 16.5 % | 42 / 118 ms | 192 ms (0) | 9.6 % |
+| same CSP with `worker-src 'none'` (fallback) | 5229 / 5636 ms | 5610 ms (3) | 0.4 % | 79 / 114 ms | 310 ms (1) | 0.4 % |
+| same, 4x (fallback) | (as above) | | | 43 / 132 ms | 592 ms (3) | 8.4 % |
+| fallback forced, WebGL (`?engine=main`) | (= WebGL row) | | | 140 / 186 ms | 299 ms (1) | 0 % |
+| fallback forced, CPU only | (= CPU row) | | | 68 / 223 ms | 255 ms (2) | 33.5 % |
+| fallback forced, WebGL, 4x / 6x | | | | 568 / 568 ms; 32 / 229 ms | 712 ms (2); 894 ms (4) | 5.4 %; 27.3 % |
+| fallback forced, CPU only, 4x | | | | 507 / 1760 ms | 2536 ms (64) | 57.2 % |
+| whole browser on 1 core, WebGL, 4x | 262 / 20742 ms | 21125 ms (17) | 51.3 % | 155 / 354 ms | 269 ms (5) | 24.2 % |
+| whole browser on 1 core, CPU only | 5884 / 6272 ms | 6262 ms (14) | 94 % | 18 / 54 ms | 99 ms (0) | 0 % |
+
+Detector speed with the worker, from `tests/e2e_test.js` (60 s clips, same day, same machine; old
+page run with `--page`): WebGL faces clip, median update 1617 ms (people 930, faces 127, fire/door
+455 ms), 39 updates in 60 s, vs 1674 ms (923 / 124 / 635 ms), 38 updates on the old page. CPU only:
+median 3857 ms (people 2882, faces 321, fire/door 1903 ms), 16 updates in 60 s, vs 3095 ms
+(2161 / 267 / 1696 ms), 20 updates: the worker now shares the 2 cores with a main thread that keeps
+drawing, tracking and answering taps, where the old page simply froze. Boxes are unchanged: faces
+clip, a white box in 39/39 updates (every ground-truth person in 38), none off a person (CPU 16/16);
+fire clip, FIRE in 37/37 updates (35 on the fire); doors clip, DOOR in 10/37 (all on a door); no
+FIRE in the 92 updates on no-fire images; tensors flat at 456; no request to any host
+(`tests/out/e2e_results_worker.json`). The worker takes 10-14 s to load the person/face models on
+SwiftShader (first boxes 17-18 s after opening, as before).
+
+Remaining slow spots (all measured above): the main-thread fallback cannot split TF.js's own start-up
+(one 300 ms task here, 700-900 ms at 4-6x throttling) or a single CPU-backend operation (up to 255 ms
+here, 2.5 s at 4x throttling on the CPU backend); at 6x throttling the page's own drawing, video and
+turn tracking keep the main thread 64-80 % busy, so a tap now and then waits 200-275 ms; with the
+whole browser on one core the worker competes with the page (taps up to 354 ms). Chromium's CPU
+throttling slows only the main thread, not the worker, so the throttled rows show the page's own cost,
+not a slow phone's detector speed. Not tested on a real phone, a real GPU, Safari or Firefox (Safari
+has WebGL in workers only from version 17; older ones would run the worker on TF.js's CPU backend).
+
+## Navigation results (2026-10-05, after adding Navigation (demo) to the page)
+
+Same machine and harnesses as above (headless Chromium, no GPU, Chromium pinned to 2 cores).
+
+* **The navigation module** (`nav/`, unchanged by the integration) still passes its own tests:
+  `geom_test.js` (36 checks: direction words and the EXIT box), `walker_test.js` (closed loop),
+  `stepdetect_test.js`, `parity_test.js` (C vs JS, stress run of 181,195 commands: 0 integer, crumb
+  or alert mismatches, max float difference 8e-8) and `pw_demo_test.js` (its own demo page in
+  Chromium, 35 of 35, including emulated motion sensors and iOS-style permission granted/denied).
+* **The page** (`page/tests/browser_test.js` on the final build, run alone): 120 of 120 checks,
+  43 of them the navigation scenarios `nav` and `navcam` (listed in `page/README.md`); the `pan` mark
+  test as before (median 8.0 px, max 18.5 px, 0 skipped frames). Motion tests 14 of 14. (An earlier
+  full run failed only that `pan` check, max 38 px with 85 of 138 tracker frames skipped, while the
+  e2e test ran on the other two cores.) Screenshots: `shots/nav_*.png` (390 px light and dark, demo walk,
+  simulated view with the EXIT box, auto demo, desktop camera with the EXIT box, eyepiece ring,
+  DEGRADED `EXIT? 3M`, UNRELIABLE `FOLLOW HOSE`, front camera).
+* **Detectors unchanged** (`tests/e2e_test.js --secs 60`, run alone, on the build before the last
+  change to the card's redraw rates, which touches only navigation drawing): WebGL faces clip, median
+  update 1640 ms (people 970, faces 127, fire/door 618 ms), 38 updates (before navigation: 1617 ms,
+  39); a white box in 38/38 updates, 37 with every ground-truth person, none off a person. Fire clip
+  1578 ms, FIRE in 36/36 updates (34 on the fire). Doors clip 1600 ms, DOOR in 9/37 updates (all on a
+  door). CPU only: 3440 / 3012 / 3903 ms, 18 / 17 / 16 updates (faces 18/18; FIRE 17/17, 16 on the
+  fire; DOOR 5/16, all on a door). No FIRE in any of the 109 updates on no-fire images, tensors flat at
+  456, no request to any host, no page errors (`tests/out/e2e_results_nav.json`).
+* **Responsiveness** (`tests/responsiveness_test.js`, same 17 configurations as above; results in
+  `tests/out/responsiveness_nav.json`, A/B runs in `tests/out/responsiveness_nav_ab.json`). Cells:
+  "Start camera" / worst click -> visible; longest main-thread task after first paint (number over
+  200 ms); share of the detection phase blocked by long tasks. "Off" = navigation in the page but not
+  started (2-3 runs: ranges); "auto demo" = `--nav`: the auto demo at its fastest speed (8x),
+  restarted whenever it ends, with its map and ring drawn even when scrolled off screen (the worst
+  case), for the whole detection phase (1-2 runs).
+
+| configuration | before navigation (1 run) | navigation in the page, off | auto demo 8x running | main thread busy in detection: off / demo |
+|---|---|---|---|---|
+| WebGL | 12 / 29 ms; 64 ms (0); 0 % | 12-18 / 33 ms; 60-62 ms (0); 0 % | 14 / 31 ms; 68 ms (0); 0 % | 18.6-19.4 % / 22.4 % |
+| CPU only | 20 / 47 ms; 61 ms (0); 0 % | 17-19 / 25-47 ms; 64-72 ms (0); 0 % | 11 / 29 ms; 72 ms (0); 0.4 % | 22.4-22.9 % / 30.6 % |
+| WebGL, 4x CPU throttling | 31 / 146 ms; 175 ms (0); 7.9 % | 29-43 / 122-154 ms; 142-143 ms (0); 6.7-8.9 % | 22-27 / 138-262 ms; 165-218 ms (0-1); 10.3-13.6 % | 55.2-56.8 % / 73.2-77.2 % |
+| WebGL, 6x | 118 / 197 ms; 216 ms (1); 20.8 % | 41-55 / 209-234 ms; 172-212 ms (0-1); 22.5-28.8 % | 71-98 / 180-375 ms; 164-192 ms (0); 24.9-34 % | 72.7-77.2 % / 86.5-90 % |
+| CPU only, 4x | 45 / 181 ms; 180 ms (0); 13.2 % | 33-34 / 151-228 ms; 140-182 ms (0); 10.8-20.9 % | 27 / 293 ms; 168 ms (0); 17.8 % | 66.8-71.4 % / 89.7 % |
+| CPU only, 6x | 59 / 275 ms; 207 ms (1); 34.6 % | 34-165 / 272-555 ms; 216-275 ms (1); 29.9-38.9 % | 33 / 407 ms; 270 ms (2); 41.4 % | 83.6-89.9 % / 95.3 % |
+| fallback forced, WebGL | 140 / 186 ms; 299 ms (1); 0 % | 84-126 / 156-179 ms; 234-322 ms (1); 0 % |  | 24.4-25.7 % / - |
+| fallback forced, CPU only | 68 / 223 ms; 255 ms (2); 33.5 % | 42-157 / 202-216 ms; 259-306 ms (2-3); 32.9-41.1 % |  | 81.3-83.1 % / - |
+| fallback forced, WebGL, 4x | 568 / 568 ms; 712 ms (2); 5.4 % | 27-44 / 569-669 ms; 564-623 ms (2-3); 2.5-11 % |  | 74.7-76.4 % / - |
+| fallback forced, WebGL, 6x | 32 / 229 ms; 894 ms (4); 27.3 % | 47-68 / 395-858 ms; 832-936 ms (4-6); 23.2-27 % |  | 84.6-86.6 % / - |
+| fallback forced, CPU only, 4x | 507 / 1760 ms; 2536 ms (64); 57.2 % | 30-330 / 564-1063 ms; 887-961 ms (67-97); 54.3-54.8 % |  | 87.1-90.5 % / - |
+| sandboxed iframe, strict CSP | 13 / 26 ms; 80 ms (0); 0 % | 18-19 / 21-25 ms; 52-136 ms (0); 0-0.8 % |  | 32.6-34.9 % / - |
+| same, 4x | 42 / 118 ms; 192 ms (0); 9.6 % | 25-26 / 144-201 ms; 129-174 ms (0); 6.7-11.6 % |  | 74.4-74.9 % / - |
+| same CSP, `worker-src 'none'` (fallback) | 79 / 114 ms; 310 ms (1); 0.4 % | 114-144 / 144-162 ms; 205-274 ms (1); 0 % | 114 / 146 ms; 296 ms (1); 0 % | 40.8-41.7 % / 48.1 % |
+| same, 4x (fallback) | 43 / 132 ms; 592 ms (3); 8.4 % | 25-27 / 195-197 ms; 539 ms (4-5); 7.2-9 % |  | 82.9-84.9 % / - |
+| whole browser on 1 core, WebGL, 4x | 155 / 354 ms; 269 ms (5); 24.2 % | 46-87 / 565-793 ms; 332-341 ms (6-9); 14-20.3 % | 152-174 / 328-547 ms; 315-322 ms (4-9); 21.5-30.3 % | 74.3-79.6 % / 94-94.7 % |
+| whole browser on 1 core, CPU only | 18 / 54 ms; 99 ms (0); 0 % | 12-13 / 30-85 ms; 74-113 ms (0); 0 % |  | 25.2-26.2 % / - |
+
+  * **Navigation off:** taps as before within run-to-run noise. The worst click is one sample out of
+    25 and moves a lot between runs of the same build (1 core: 565-793 ms with navigation, 332-533 ms
+    in 3 runs of the same page with the navigation script removed; the 354 ms before was one run);
+    those worst clicks fall in single long tasks while the worker loads on the same core. Script
+    time on the main thread is unchanged, but in the A/B runs the main thread was busier with the
+    navigation script present, all of it outside script (webgl-4x +6, cpu-4x +6, cpu-6x +7,
+    1 core +12 percentage points in the harness, 2-3 runs each; +2 to +5 points in 12-window direct
+    measurements at 6x). Its cause was not found: it is not the card's canvases (blanking them
+    changed nothing), the IntersectionObserver (disabling it changed nothing) or timers (none run
+    while navigation is off). The script itself runs once at load: 5-6 ms here, 20-50 ms at 4-6x.
+  * **Auto demo running:** without CPU throttling no tap is slower (worst 29-31 ms) and the main
+    thread is 3-8 points busier; under 4-6x throttling it is 5-23 points busier, and in the
+    2-core rows the worst tap rose from at most 154 / 234 / 228 ms (WebGL 4x / 6x, CPU 4x, off) to
+    262 / 375 / 293 ms (the 1-core and CPU 6x rows stay inside their off range). Measured directly
+    at 4x with the camera and detection running: the 8x simulation itself takes about 5 % of the
+    main thread, drawing the card about 2-3 %, its text and the picture marker the rest. After that
+    measurement the card was made cheaper (the ring is drawn at most 10 times a second and only
+    when it changes, the map 5 times a second; at the earlier 20 / 10 per second the demo cost 3
+    points more at 4x). The page's default demo speed is 2x, a quarter of the simulation work.
+* **Not tested:** a real phone (its motion sensors, iOS's permission prompt, a body-worn sensor),
+  walking with real steps, real speech output, and the page inside claude.ai. Motion sensors were
+  only emulated (`pw_demo_test.js`) or stubbed (`requestPermission` in the browser test).
 
 ## Measured results
 
@@ -267,9 +482,11 @@ credits are in `LICENSES.md`.
   (Chromium's software renderer) on 2 cores. Real laptop/phone GPUs should be much faster, but that
   was not tested, and neither were Safari/iOS, Firefox, Android, a real webcam, a real motion
   sensor, real speech output or the page inside claude.ai itself.
-* **CPU fallback is slow** (one update every 3.2-3.6 s here). The video keeps playing at the camera
-  rate because the page shows the `<video>` element itself under a transparent box layer, but the
-  boxes, turn tracking and alerts only refresh between detector runs.
+* **CPU fallback is slow** (one update every 3-4 s here). The video keeps playing at the camera
+  rate because the page shows the `<video>` element itself under a transparent box layer, and with
+  the detectors in a worker the turn tracking, alerts and taps keep going between updates; only the
+  boxes wait for the next update. Where the host refuses the worker the detectors share the page's
+  thread and taps can take 0.2-0.3 s (see "Responsiveness").
 
 ## Licences
 

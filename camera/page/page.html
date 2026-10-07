@@ -6,18 +6,31 @@
   --fg: #15181d;
   --muted: #5d6573;
   --border: #dcdfe5;
-  --accent: #e2552b;
+  --accent: #c2410c;
   --accent-fg: #ffffff;
   --chip: #eef0f3;
   --screen: #0a0d12;
-  --good: #1d9a50;
-  --warn: #b97700;
+  --good: #157a3e;
+  --warn: #8a5a00;
   --bad: #d43d3d;
   --person: #ffffff;
   --fire: #c850ff;
   --exit: #28ff50;
   --notice-bg: #fff6e8;
   --notice-border: #f0d4a8;
+  --nav-bg: #0f1418;
+  --nav-fg: #f2f4f5;
+  --nav-muted: #93a0aa;
+  --nav-wall: #56616c;
+  --nav-trail: #6cb4ff;
+  --nav-true: #c9b07f;
+  --nav-route: #28ff50;
+  --nav-door: #28ff50;
+  --nav-me: #ffffff;
+  --nav-good: #28ff50;
+  --nav-warn: #ffdc00;
+  --nav-bad: #ff4a4a;
+  --nav-ring: #000000;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -28,9 +41,11 @@
     --muted: #98a1af;
     --border: #2a313b;
     --chip: #1f252d;
+    --good: #34c26b;
     --warn: #e0a53a;
     --notice-bg: #2a2216;
     --notice-border: #4d3d22;
+    --nav-bg: #080b0e;
     color-scheme: dark;
   }
 }
@@ -41,9 +56,11 @@
   --muted: #98a1af;
   --border: #2a313b;
   --chip: #1f252d;
+  --good: #34c26b;
   --warn: #e0a53a;
   --notice-bg: #2a2216;
   --notice-border: #4d3d22;
+  --nav-bg: #080b0e;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -88,7 +105,7 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: 
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 button {
   font: inherit; font-size: 14px; color: var(--fg); background: var(--chip); border: 1px solid var(--border);
-  border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px;
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 44px;
 }
 button:hover:not(:disabled) { border-color: var(--muted); }
 button:disabled { opacity: 0.5; cursor: default; }
@@ -115,12 +132,57 @@ ol.log li.empty { color: var(--muted); }
 .about p:last-child { margin-bottom: 0; }
 .about .privacy { font-weight: 600; }
 .foot { margin-top: 16px; color: var(--muted); font-size: 13px; max-width: 860px; }
+.screen.sim .overlay { display: none; }
+/* stacked layers: the box is as tall as its tallest layer whichever is shown, so swapping them
+   (navigation on / off, a longer hint) never moves the buttons below */
+.stack { display: grid; }
+.stack > * { grid-area: 1 / 1; min-width: 0; }
+.stack > .off { visibility: hidden; }
+.screen button.onpic { position: absolute; top: 8px; right: 8px; z-index: 2; background: rgba(10, 13, 18, 0.62); color: #fff; border-color: rgba(255, 255, 255, 0.5); }
+.campad { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 1.35fr); gap: 8px; align-items: stretch; }
+.campad button, .navpad button { padding: 6px 4px; line-height: 1.2; }
+.navcard .row { margin-top: 10px; }
+.nav-input { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; }
+.nav-input .ndot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; margin-top: 5px; }
+.nav-input .ndot.ok { background: var(--good); } .nav-input .ndot.wait { background: var(--warn); } .nav-input .ndot.bad { background: var(--bad); }
+.nav-input b { font-size: 14px; }
+.nav-input .hint { margin-top: 2px; }
+.navpad { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; margin-top: 10px; }
+.navpad[hidden] { display: none; }
+button.hold { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: pan-y; }
+button.hold.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.nav-input { min-height: calc(20px + 3 * 1.45 * 13px); }
+.navmain { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 14px; align-items: start; margin-top: 8px; }
+canvas.nav-arrow { width: 140px; height: 140px; display: block; background: var(--nav-bg); border-radius: 12px; }
+.navread p { margin: 0 0 4px; }
+.nav-say { font-size: 16px; font-weight: 650; line-height: 1.35; margin: 12px 0 0; min-height: calc(2 * 1.35 * 16px); }
+.nav-result { margin: 8px 0 0; min-height: calc(2 * 1.45 * 13px); }
+.nav-nums { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.nav-nums b { color: var(--fg); }
+.badge { display: inline-block; padding: 0 8px; border-radius: 999px; font-weight: 700; font-size: 12px; border: 2px solid currentColor; color: var(--muted); }
+.badge.GOOD { color: var(--good); } .badge.DEGRADED { color: var(--warn); } .badge.UNRELIABLE { color: var(--bad); }
+.maphead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-radius: 10px; background: var(--nav-bg); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (max-width: 900px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
 }
+/* landscape phone (and a short frame): the picture and its buttons on the first screen */
+@media (max-height: 500px) {
+  .wrap { padding-top: 8px; }
+  header { margin-bottom: 8px; }
+  h1 { font-size: 18px; }
+  .sub { display: none; }
+  .screen { max-height: calc(100vh - 64px); }
+  .overlay { align-items: flex-start; padding-top: 10px; }
+  .overlay .box { gap: 6px; }
+  .overlay .small { display: none; }
+}
 @media (max-width: 420px) {
   .stat { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .navmain { grid-template-columns: 116px minmax(0, 1fr); gap: 12px; }
+  canvas.nav-arrow { width: 116px; height: 116px; }
+  .campad { gap: 6px; }
   .overlay .big { font-size: 16px; }
 }
 </style>
@@ -128,7 +190,7 @@ ol.log li.empty { color: var(--muted); }
 <div class="wrap" id="ps-root">
   <header>
     <h1><span class="dot"></span>PyroSight Camera</h1>
-    <p class="sub">Your own camera with the PyroSight eyepiece boxes: people in a white box with a rough distance, fire in purple, the way out in green. The detectors run inside this page, so video never leaves your device.</p>
+    <p class="sub">Your own camera with the PyroSight eyepiece boxes: people in a white box with a rough distance, fire in purple, the way out in green. The detectors run inside this page, so video never leaves your device. Below the camera: a navigation demo that finds the way back out, which works even without a camera.</p>
   </header>
 
   <div class="grid">
@@ -152,42 +214,83 @@ ol.log li.empty { color: var(--muted); }
               </div>
             </div>
           </div>
+          <button class="onpic" id="switch" hidden>Switch camera</button>
         </div>
         <div class="legend" aria-label="Box colours">
           <span class="chip"><i class="sw person"></i>Person</span>
           <span class="chip"><i class="sw fire"></i>Fire</span>
-          <span class="chip"><i class="sw exit"></i>Way out (door or your mark)</span>
+          <span class="chip"><i class="sw exit"></i>Way out (door, your mark or navigation)</span>
         </div>
 
+        <div class="controls" aria-label="Controls">
+          <div class="row">
+            <button class="primary" id="start">Start camera</button>
+            <button id="file-btn">Open photo or video</button>
+            <input type="file" id="file" accept="image/*,video/*" class="sr" tabindex="-1" aria-hidden="true">
+          </div>
+          <div class="stack" id="act-row">
+            <div class="row" id="mark-row">
+              <button id="mark" disabled>Mark way out</button>
+              <button id="whereout" disabled>Where’s the way out?</button>
+              <button id="clear-mark" hidden>Clear mark</button>
+            </div>
+            <div class="campad off" id="cam-pad" aria-label="Navigation controls">
+              <button class="hold" id="cam-left" aria-label="Turn left">&#x21B6; Left</button>
+              <button class="hold" id="cam-walk">Hold to walk</button>
+              <button class="hold" id="cam-right" aria-label="Turn right">Right &#x21B7;</button>
+              <button id="cam-out">Guide me out</button>
+            </div>
+          </div>
+          <div class="row">
+            <button id="voice" aria-pressed="false">Voice: off</button>
+            <button id="eyepiece" aria-pressed="false">Eyepiece view: off</button>
+          </div>
+          <div class="stack"><p class="hint" id="hint">Mark way out remembers where the camera points now; or tap the picture to mark that spot.</p><p class="hint off" aria-hidden="true" id="hint-size1"></p><p class="hint off" aria-hidden="true" id="hint-size2"></p></div>
+        </div>
         <div class="notice" id="notice" hidden role="status">
           <p class="t" id="notice-title">Camera not available</p>
           <p id="notice-text"></p>
           <p class="hint" id="notice-hint">You can still try it:</p>
           <div class="row">
             <button id="n-file">Analyse a photo or video</button>
+            <button id="n-nav">Try the navigation demo</button>
             <button id="n-save" hidden>Save this page and open it in your browser</button>
           </div>
           <p class="hint" id="n-save-msg" aria-live="polite"></p>
         </div>
 
-        <div class="controls" aria-label="Controls">
-          <div class="row">
-            <button class="primary" id="start">Start camera</button>
-            <button id="switch" hidden>Switch camera</button>
-            <button id="file-btn">Open photo or video</button>
-            <input type="file" id="file" accept="image/*,video/*" class="sr" tabindex="-1" aria-hidden="true">
-          </div>
-          <div class="row">
-            <button id="mark" disabled>Mark way out</button>
-            <button id="whereout" disabled>Where’s the way out?</button>
-            <button id="clear-mark" hidden>Clear mark</button>
-          </div>
-          <div class="row">
-            <button id="voice" aria-pressed="false">Voice: off</button>
-            <button id="eyepiece" aria-pressed="false">Eyepiece view: off</button>
-          </div>
-          <p class="hint" id="hint">Mark way out remembers where the camera points now; or tap the picture to mark that spot.</p>
+      </section>
+
+      <section class="card navcard" id="nav-card" aria-labelledby="nav-h">
+        <div class="card-head"><h2 id="nav-h">Navigation (demo)</h2><span class="engine" id="nav-state">Off</span></div>
+        <p class="hint">Finds the way back out like the eyepiece: it counts your steps and turns from where you came in, with the device’s own navigation code. Press Start here at the entry, walk in, then Guide me out. No motion sensors? Demo walk simulates a firefighter walking through a building; the picture above shows its eyepiece view, with buttons under it.</p>
+        <div class="row">
+          <button class="primary" id="nav-start">Start here (mark entry)</button>
+          <button id="nav-out">Guide me out</button>
+          <button id="nav-stop" disabled>Stop</button>
         </div>
+        <div class="row">
+          <button id="nav-demo">Demo walk</button>
+          <button id="nav-auto">Auto demo</button>
+          <button id="nav-speed" disabled>Speed: 2x</button>
+        </div>
+        <div class="navpad" id="nav-pad">
+          <button class="hold" id="nav-left" aria-label="Turn left" disabled>&#x21B6; Left</button>
+          <button class="hold" id="nav-walk" disabled>Hold to walk</button>
+          <button class="hold" id="nav-right" aria-label="Turn right" disabled>Right &#x21B7;</button>
+        </div>
+        <div class="nav-input" id="nav-input"><span class="ndot" id="nav-dot"></span><div><b id="nav-in-label">Not started</b><p class="hint" id="nav-in-detail">Uses the phone’s motion sensors if this page may read them; otherwise how the camera picture turns; otherwise a simulated walk.</p></div></div>
+        <p class="nav-say" id="nav-say">Not started.</p>
+        <div class="navmain">
+          <canvas id="nav-arrow" class="nav-arrow" width="140" height="140" role="img" aria-label="Direction to the way out"></canvas>
+          <div class="navread">
+            <p class="nav-nums">Route <b id="nav-route">–</b> · straight <b id="nav-home">–</b></p>
+            <p class="nav-nums">Confidence <b id="nav-conf">–</b> <span class="badge" id="nav-level">–</span></p>
+          </div>
+        </div>
+        <p class="hint nav-result" id="nav-result"></p>
+        <div class="maphead"><span class="hint">Map: blue = estimated path, green dashes = way back</span><button id="nav-up">Heading up</button></div>
+        <canvas id="nav-map" class="nav-map" width="640" height="340" role="img" aria-label="Map of the walk and the way back"></canvas>
       </section>
 
       <section class="card" aria-labelledby="al-h">
@@ -214,7 +317,8 @@ ol.log li.empty { color: var(--muted); }
         <div class="card-head"><h2 id="ab-h">About this view</h2></div>
         <p class="privacy">Video never leaves your device. Everything runs inside this page; nothing is uploaded, recorded or stored.</p>
         <p>This uses an ordinary camera, which sees light. It cannot see through smoke or in the dark. The real PyroSight eyepiece uses a thermal camera that sees heat. Eyepiece view only imitates its grey picture; it is not thermal imaging.</p>
-        <p>Mark way out remembers a direction and follows it as you turn the camera, from how the picture moves and from the motion sensor on phones that report one. It does not know where you are or how far you have walked, so it is not navigation through a building.</p>
+        <p>Mark way out remembers a direction and follows it as you turn the camera, from how the picture moves and from the motion sensor on phones that report one. It does not know how far you have walked.</p>
+        <p>Navigation (demo) runs the eyepiece’s own way-back-out code: it counts steps and turns from the entry, so its estimate drifts with every step, and its confidence drops as it does. A phone in your hand is not the device’s body-worn sensor, so expect larger errors. Demo walk is a simulation. While navigation runs, the green EXIT marker in the picture comes from it instead of from your mark.</p>
         <p>Distances are rough estimates from the size of a face or body and an assumed camera field of view of 65°.</p>
         <p>The fire and door detector is small and was trained on a few hundred public fire photos and a few thousand door photos. It misses many small or distant flames (a candle or lighter is found more often near the middle of the picture), can box a bright bulb, lamp, LED or low sun as fire, and finds only clear, face-on doors.</p>
         <p class="hint" id="credits">People and faces: COCO-SSD (TensorFlow.js models) and MediaPipe BlazeFace, Apache-2.0. TensorFlow.js, Apache-2.0.</p>

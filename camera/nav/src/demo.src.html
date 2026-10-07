@@ -1,0 +1,260 @@
+<title>PyroSight Navigation Demo</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #15191d; --muted: #5d6770; --line: #d9dde2;
+  --accent: #0b7a2a; --accent-fg: #ffffff; --btn: #eef0f3; --btn-fg: #15191d;
+  --good: #0b8a2e; --warn: #a86b00; --bad: #c62828;
+  --nav-bg: #0f1418; --nav-fg: #f2f4f5; --nav-muted: #93a0aa; --nav-wall: #56616c; --nav-trail: #6cb4ff;
+  --nav-true: #c9b07f; --nav-route: #28ff50; --nav-door: #28ff50; --nav-me: #ffffff;
+  --nav-good: #28ff50; --nav-warn: #ffc400; --nav-bad: #ff4a4a; --nav-ring: #000000;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1013; --card: #171c21; --fg: #eef1f3; --muted: #9aa5ae; --line: #2a3138;
+    --accent: #28c34f; --accent-fg: #06110a; --btn: #232a31; --btn-fg: #eef1f3;
+    --good: #3ddc6b; --warn: #ffc24a; --bad: #ff6b6b;
+    --nav-bg: #080b0e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1013; --card: #171c21; --fg: #eef1f3; --muted: #9aa5ae; --line: #2a3138;
+  --accent: #28c34f; --accent-fg: #06110a; --btn: #232a31; --btn-fg: #eef1f3;
+  --good: #3ddc6b; --warn: #ffc24a; --bad: #ff6b6b;
+  --nav-bg: #080b0e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow-x: hidden; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.3rem; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 0 0 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.row3 { display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 8px; }
+button, select { min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--btn); color: var(--btn-fg);
+  font: inherit; font-weight: 600; padding: 8px 12px; cursor: pointer; touch-action: manipulation; }
+button:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+button.hold { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
+button.hold.on { background: var(--accent); color: var(--accent-fg); }
+.row button { flex: 1 1 auto; }
+label.inline { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+label.inline input { width: 22px; height: 22px; }
+.inputline { display: flex; align-items: center; gap: 8px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--good); } .dot.wait { background: var(--warn); } .dot.bad { background: var(--bad); }
+.muted { color: var(--muted); margin: 4px 0 0; font-size: 0.92rem; }
+.navrow { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: center; }
+canvas.arrow { width: 150px; height: 150px; display: block; background: var(--nav-bg); border-radius: 12px; }
+.say { font-size: 1.15rem; font-weight: 700; }
+.stats { color: var(--muted); margin-top: 6px; }
+.stats b { color: var(--fg); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-weight: 700; font-size: 0.85rem; border: 2px solid currentColor; }
+.badge.GOOD { color: var(--good); } .badge.DEGRADED { color: var(--warn); } .badge.UNRELIABLE { color: var(--bad); }
+.maphead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+canvas.map { width: 100%; height: min(78vw, 460px); display: block; border-radius: 10px; background: var(--nav-bg); touch-action: pan-y; }
+canvas.cam { width: 100%; aspect-ratio: 4 / 3; display: block; border-radius: 10px; background: #000; margin-top: 8px; }
+ol.log { margin: 6px 0 0; padding-left: 22px; max-height: 180px; overflow: auto; }
+ol.log li { margin: 2px 0; }
+.hint, .foot { color: var(--muted); font-size: 0.88rem; }
+.result { font-weight: 700; margin-top: 8px; }
+@media (max-width: 420px) {
+  .navrow { grid-template-columns: 120px 1fr; }
+  canvas.arrow { width: 120px; height: 120px; }
+  .row3 button { padding: 8px 6px; }
+}
+</style>
+<main class="wrap">
+  <h1>PyroSight way-out navigation</h1>
+  <p class="sub">The device's own navigation code (step counting, turns, breadcrumbs, confidence) running in this page. Mark the entry, walk in, then follow the arrow back out.</p>
+
+  <section class="card" aria-live="polite">
+    <div class="inputline"><span class="dot" id="inDot"></span><b id="inLabel">Starting…</b></div>
+    <p class="muted" id="inDetail"></p>
+    <div class="row">
+      <button id="btnSensors">Use phone sensors</button>
+      <button id="btnDemo">Demo walk</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="navrow">
+      <canvas id="arrow" class="arrow" aria-label="Direction to the way out"></canvas>
+      <div>
+        <div class="say" id="say" aria-live="polite">Mark the entry to start.</div>
+        <div class="stats">Route <b id="route">–</b> · straight <b id="home">–</b><br>
+          Confidence <b id="conf">–</b> <span class="badge" id="level">–</span></div>
+        <div class="result" id="result"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="maphead"><b>Map</b><button id="btnUp">Heading up</button></div>
+    <canvas id="map" class="map" aria-label="Map of the walk"></canvas>
+  </section>
+
+  <section class="card" id="controls">
+    <div class="row3">
+      <button id="btnLeft" class="hold" aria-label="Turn left">&#x21B6; Left</button>
+      <button id="btnWalk" class="hold">Hold to walk</button>
+      <button id="btnRight" class="hold" aria-label="Turn right">Right &#x21B7;</button>
+    </div>
+    <div class="row">
+      <button id="btnAuto" class="primary">Auto demo</button>
+      <button id="btnOut">Guide me out</button>
+      <button id="btnMark">Mark entry here</button>
+      <button id="btnWhere">Where is out?</button>
+    </div>
+    <div class="row">
+      <label class="inline">Speed <select id="speed"><option value="1">1x</option><option value="2" selected>2x</option><option value="4">4x</option><option value="8">8x</option></select></label>
+      <label class="inline"><input type="checkbox" id="voice"> Speak alerts</label>
+    </div>
+    <p class="hint">Keyboard: &uarr; or W to walk, &larr; &rarr; or A D to turn (tap = 15&deg;, hold = keep turning).</p>
+  </section>
+
+  <section class="card">
+    <div class="maphead"><b>Camera picture: where the green EXIT box goes</b></div>
+    <label class="inline"><input type="checkbox" id="mirror"> Front camera (mirrored preview)</label>
+    <canvas id="cam" class="cam" aria-label="Camera picture with the EXIT marker"></canvas>
+    <p class="muted" id="camNote"></p>
+  </section>
+
+  <section class="card">
+    <b>Spoken alerts</b>
+    <ol class="log" id="log"></ol>
+  </section>
+
+  <p class="foot">Demo walk: a simulated firefighter in a simulated building, with simulated motion-sensor errors (stride and heading drift), so the estimate (blue) wanders from the true path (dashed). Phone sensors: real walking with the phone held upright in front of you; a phone is not the device's body-worn sensor, so expect more error. Nothing leaves this page.</p>
+</main>
+<script>
+/*@@PS_NAV_JS@@*/
+</script>
+<script>
+(function () {
+  'use strict';
+  const PSNav = window.PSNav;
+  const $ = (id) => document.getElementById(id);
+  const nav = new PSNav.Navigator({ demoSpeed: 2 });
+  const map = new PSNav.MapRenderer($('map'));
+  const arrow = new PSNav.ArrowWidget($('arrow'));
+  window.__psNav = nav;
+  window.__psNavUi = { map, arrow, lastBox: null };
+
+  // ---- input indicator
+  function showInput(inp) {
+    $('inLabel').textContent = inp.label + (inp.status && inp.status !== 'ok' ? ' (' + inp.status + ')' : '');
+    $('inDetail').textContent = inp.detail || '';
+    const d = $('inDot');
+    d.className = 'dot ' + (inp.status === 'ok' ? 'ok' : (inp.status === 'waiting' || inp.status === 'asking') ? 'wait' : inp.status === 'off' ? '' : 'bad');
+    const demo = inp.mode === 'demo';
+    for (const id of ['btnLeft', 'btnRight', 'btnAuto', 'btnOut']) $(id).disabled = !demo;
+    document.documentElement.dataset.navInput = inp.mode + ':' + inp.status;
+  }
+  nav.on('input', showInput);
+  showInput(nav.input);
+
+  // ---- alerts
+  nav.on('alert', (a) => {
+    const li = document.createElement('li');
+    li.textContent = a.text;
+    $('log').prepend(li);
+    while ($('log').children.length > 30) $('log').lastChild.remove();
+    if ($('voice').checked) PSNav.speak(a.text);
+  });
+  nav.on('demo', (d) => {
+    if (d.phase === 'done' && d.result) {
+      const r = d.result;
+      $('result').textContent = (r.how === 'hose' ? 'Out by the hose line' : r.how === 'exit' ? 'Arrow says EXIT' : r.how === 'outside' ? 'Walked out' : 'Stopped') +
+        ': ' + r.doorErrorM.toFixed(1) + ' m from the real door.';
+    } else if (d.phase === 'inbound') $('result').textContent = 'Walking in…';
+    else if (d.phase === 'scan') $('result').textContent = 'Looking around the room…';
+    else if (d.phase === 'outbound') $('result').textContent = 'Following the arrow out…';
+    else if (d.phase === 'manual') $('result').textContent = '';
+  });
+
+  // ---- buttons
+  $('btnSensors').addEventListener('click', () => { nav.useSensors(); });
+  $('btnDemo').addEventListener('click', () => { nav.useDemo(); });
+  $('btnAuto').addEventListener('click', () => nav.autoDemo());
+  $('btnOut').addEventListener('click', () => nav.guideMeOut());
+  $('btnMark').addEventListener('click', () => nav.markEntry());
+  $('btnWhere').addEventListener('click', () => nav.whereOut());
+  $('btnUp').addEventListener('click', () => { const up = map.toggleUp(); $('btnUp').textContent = up === 'heading' ? 'Entry direction up' : 'Heading up'; });
+  $('speed').addEventListener('change', (e) => nav.setSpeed(+e.target.value));
+  const hold = (id, down, up) => PSNav.holdButton($(id), () => { $(id).classList.add('on'); down(); }, () => { $(id).classList.remove('on'); up(); });
+  hold('btnWalk', () => nav.walk(true), () => nav.walk(false));
+  hold('btnLeft', () => nav.turnHold(1), () => nav.turnHold(0));
+  hold('btnRight', () => nav.turnHold(-1), () => nav.turnHold(0));
+  nav.bindKeys(window);
+
+  // ---- camera picture mock-up (where the integration would draw the EXIT box)
+  const cam = $('cam'), cc = cam.getContext('2d');
+  function drawCam(g) {
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const W = Math.round(cam.clientWidth * dpr), H = Math.round(cam.clientHeight * dpr);
+    if (!W || !H) return;
+    if (cam.width !== W || cam.height !== H) { cam.width = W; cam.height = H; }
+    const grd = cc.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0, '#2a2f35'); grd.addColorStop(0.5, '#3a4048'); grd.addColorStop(1, '#22262b');
+    cc.fillStyle = grd; cc.fillRect(0, 0, W, H);
+    cc.strokeStyle = 'rgba(255,255,255,0.15)'; cc.lineWidth = dpr; cc.beginPath(); cc.moveTo(0, H / 2); cc.lineTo(W, H / 2); cc.stroke();
+    const mirrored = $('mirror').checked;
+    const b = PSNav.exitBox(g, { hfovDeg: 65, mirrored, width: W, height: H });
+    window.__psNavUi.lastBox = b;
+    cc.font = 'bold ' + Math.round(14 * dpr) + 'px system-ui, sans-serif';
+    cc.textBaseline = 'bottom';
+    const green = '#28FF50';
+    if (b.kind === 'box') {
+      cc.strokeStyle = '#000'; cc.lineWidth = 5 * dpr; cc.strokeRect(b.px.x, b.px.y, b.px.w, b.px.h);
+      cc.strokeStyle = green; cc.lineWidth = 3 * dpr; cc.strokeRect(b.px.x, b.px.y, b.px.w, b.px.h);
+      cc.fillStyle = green; cc.textAlign = 'left';
+      cc.fillText(b.label, Math.max(4 * dpr, Math.min(W - 90 * dpr, b.px.x)), Math.max(18 * dpr, b.px.y - 4 * dpr));
+      $('camNote').textContent = 'Door in view: green EXIT box (' + Math.round(b.distM) + ' m).';
+    } else if (b.kind === 'edge') {
+      const left = b.side === 'left', y = H / 2, x = left ? 14 * dpr : W - 14 * dpr, s = 16 * dpr;
+      cc.fillStyle = green; cc.beginPath();
+      cc.moveTo(x, y); cc.lineTo(x + (left ? s : -s), y - s); cc.lineTo(x + (left ? s : -s), y + s); cc.closePath(); cc.fill();
+      cc.textAlign = left ? 'left' : 'right'; cc.textBaseline = 'middle';
+      cc.fillText(b.label, x + (left ? 1.6 * s : -1.6 * s), y);
+      $('camNote').textContent = 'Way out not in view: arrow at the ' + b.side + ' edge' + (b.behind ? ' (behind the camera)' : '') + '.';
+    } else if (b.kind === 'route') {
+      const x = b.x * W, y = H * 0.62, s = 16 * dpr;
+      cc.fillStyle = green; cc.beginPath();
+      cc.moveTo(x, y - s); cc.lineTo(x + s, y + s * 0.6); cc.lineTo(x, y); cc.lineTo(x - s, y + s * 0.6); cc.closePath(); cc.fill();
+      cc.textAlign = 'center'; cc.textBaseline = 'top'; cc.fillText(b.label, x, y + s);
+      $('camNote').textContent = 'Next leg of the way out is in view (the door itself is further on).';
+    } else {
+      cc.fillStyle = 'rgba(255,255,255,0.6)'; cc.textAlign = 'center'; cc.textBaseline = 'middle';
+      cc.fillText(b.reason === 'unreliable: follow the hose' ? 'FOLLOW HOSE' : '', W / 2, H / 2);
+      $('camNote').textContent = 'No EXIT marker: ' + b.reason + '.';
+    }
+  }
+
+  // ---- text
+  function showText(g) {
+    $('say').textContent = !g.valid ? 'Mark the entry to start.' : g.atExit && !g.followHose ? 'You are at the way out.' : g.phrase;
+    $('route').textContent = g.valid ? g.routeDistM.toFixed(1) + ' m' : '–';
+    $('home').textContent = g.valid ? g.homeDistM.toFixed(1) + ' m' : '–';
+    $('conf').textContent = g.valid ? Math.round(g.confidence * 100) + '% (±' + g.posSigmaM.toFixed(1) + ' m)' : '–';
+    const lv = $('level');
+    lv.textContent = g.valid ? g.level : '–';
+    lv.className = 'badge ' + (g.valid ? g.level : '');
+  }
+
+  function frame() {
+    const g = nav.g;
+    arrow.draw(g);
+    map.draw(nav.snapshot());
+    drawCam(g);
+    showText(g);
+    requestAnimationFrame(frame);
+  }
+  nav.run();
+  nav.autoStart();
+  requestAnimationFrame(frame);
+})();
+</script>
