@@ -10,17 +10,18 @@ from decode import decode, CLASS_NAMES
 
 @torch.no_grad()
 def infer_arrays(model, rgbs, bs=16):
-    """rgbs: list of HxWx3 uint8 RGB. Returns list of (heat, wh, off) numpy [2,GH,GW] with
-    heat as sigmoid probability (works for train-mode and export-mode models)."""
+    """rgbs: list of HxWx3 uint8 RGB. Returns list of (heat, wh, off[, wh_w, off_w]) numpy [C,GH,GW] with
+    heat as sigmoid probability (works for train-mode and export-mode models; the window model adds
+    the window boxes' own wh_w, off_w)."""
     model.eval()
     out = []
     for i in range(0, len(rgbs), bs):
         x = torch.from_numpy(np.stack([preprocess(r) for r in rgbs[i:i + bs]]))
-        heat, wh, off = model(x)
+        outs = list(model(x))
         if not getattr(model, 'export_mode', False):
-            heat = torch.sigmoid(heat)
+            outs[0] = torch.sigmoid(outs[0])
         for j in range(x.shape[0]):
-            out.append((heat[j].numpy(), wh[j].numpy(), off[j].numpy()))
+            out.append(tuple(o[j].numpy() for o in outs))
     return out
 
 
@@ -93,8 +94,13 @@ def ap_and_pr(dets_per_img, items, cls_id, thr, iou_thr=0.5):
     return dict(ap=voc_ap(rec, prec), n_gt=n, recall=r_at, precision=p_at, n_det=int(sel.sum()))
 
 
+def decode_out(o, **kw):
+    """decode one (heat, wh, off[, wh_w, off_w]) tuple"""
+    return decode(o[0], o[1], o[2], wh_w=o[3] if len(o) > 3 else None, off_w=o[4] if len(o) > 4 else None, **kw)
+
+
 def decode_all(outs, min_score=0.05):
-    return [decode(h, w, o, min_score=min_score) for h, w, o in outs]
+    return [decode_out(o, min_score=min_score) for o in outs]
 
 
 def fp_per_image(dets_per_img, cls_name, thr):
@@ -107,4 +113,4 @@ def image_present_rate(dets_per_img, cls_name, thr):
 
 
 def max_scores(outs, cls_id):
-    return np.array([float(h[cls_id].max()) for h, w, o in outs])
+    return np.array([float(o[0][cls_id].max()) for o in outs])

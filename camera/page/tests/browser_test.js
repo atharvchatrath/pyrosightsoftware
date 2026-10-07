@@ -17,8 +17,22 @@ const SHOTS = path.join(PAGE_DIR, 'shots');
 const DIST = path.join(PAGE_DIR, 'dist', 'pyrosight_camera.html');
 const FD_DIST = path.join(PAGE_DIR, 'build', 'dist_firedoor_test', 'pyrosight_camera.html');
 const CLIPS = JSON.parse(fs.readFileSync(path.join(OUT, 'clips.json')));
-const clip = (n) => path.join(OUT, n + '_640x480.y4m');
+const clip = (n) => path.isAbsolute(n) ? n : path.join(OUT, n + '_640x480.y4m');
+// the held-out window photo clip of the end-to-end suite (camera/tests/make_e2e_clips.py --only still_window)
+function e2eClip(name) {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(PAGE_DIR, '..', 'tests', 'out', 'e2e_clips.json')));
+    const c = m.clips[name];
+    return c ? path.join(c.dir || m.clips_dir, c.file) : null;
+  } catch (e) { return null; }
+}
 fs.mkdirSync(SHOTS, { recursive: true });
+
+// the page's own palette tables (the same extraction as tests/palette_parity.js)
+const PALETTES = (() => {
+  const m = fs.readFileSync(path.join(PAGE_DIR, 'app.js'), 'utf8').match(/const EYE_PALETTES = \(function \(\) \{[\s\S]*?\n  \}\)\(\);/);
+  return new Function(m[0].replace('const EYE_PALETTES =', 'return') + '\n')();
+})();
 
 const checks = [];
 function check(scn, name, ok, detail) {
@@ -68,7 +82,7 @@ const S = (page) => page.evaluate(() => {
     mark: s.mark, fd: s.fd && { name: s.fd.name, stub: !!s.fd.stub }, fps: s.fps,
     overflow: document.documentElement.scrollWidth - window.innerWidth,
     results: s.results && { people: s.results.people.map((d) => ({ x: d.x, y: d.y, w: d.w, h: d.h, label: d.label, src: d.src, score: d.score })),
-      fire: s.results.fire, door: s.results.door } };
+      fire: s.results.fire, door: s.results.door, window: s.results.window || [] } };
 });
 const waitInf = (page, n, timeout) => page.waitForFunction((k) => window.PSCamera && (window.PSCamera.state.stats.inferences >= k || window.PSCamera.state.loadError),
   n, { timeout: timeout || 300000 });
@@ -113,13 +127,33 @@ SCN.desktop = async () => {
     await page.click('#eyepiece');
     await sleep(1500);
     await shot(page, 'desktop_eyepiece.png');
-    const grey = await page.evaluate(() => {
+    // the eyepiece view opens in the device's Ironbow palette (thermal colours, not grey): every pixel of a
+    // patch is an entry of the device's ironbow table (page/tests/palette_parity.js checks that table
+    // against core/src/ps_display.c); Palette cycles Ironbow -> Amber night -> White-hot (grey)
+    const patch = () => page.evaluate(() => {
       const c = document.getElementById('view'), g = c.getContext('2d'), d = g.getImageData(c.width * 0.25, c.height * 0.3, 40, 40).data;
-      let maxChroma = 0;
-      for (let i = 0; i < d.length; i += 4) maxChroma = Math.max(maxChroma, Math.abs(d[i] - d[i + 1]), Math.abs(d[i + 1] - d[i + 2]));
-      return maxChroma;
+      return { px: Array.from(d), button: document.getElementById('palette').textContent, palette: window.PSCamera.state.palette };
     });
-    check('desktop', 'eyepiece view renders grey', grey <= 2, 'max channel difference in a patch ' + grey);
+    const inLut = (px, lut) => {
+      const set = new Set();
+      for (let v = 0; v < 256; v++) set.add(lut[v * 3] + ',' + lut[v * 3 + 1] + ',' + lut[v * 3 + 2]);
+      let n = 0, hit = 0, chroma = 0;
+      for (let i = 0; i < px.length; i += 4) { n++; if (set.has(px[i] + ',' + px[i + 1] + ',' + px[i + 2])) hit++; chroma = Math.max(chroma, Math.abs(px[i] - px[i + 1]), Math.abs(px[i + 1] - px[i + 2])); }
+      return { frac: hit / n, maxChroma: chroma };
+    };
+    const iron = inLut((await patch()).px, PALETTES[1].lut), ep0 = await patch();
+    check('desktop', 'eyepiece view renders the device palette (Ironbow by default)', ep0.palette === 1 && ep0.button === 'Palette: Ironbow' &&
+      iron.frac >= 0.9 && iron.maxChroma > 20, { palette: ep0.palette, button: ep0.button, ironbowPixels: +iron.frac.toFixed(3), maxChroma: iron.maxChroma });
+    await page.click('#palette');
+    await sleep(400);
+    const ep1 = await patch(), amber = inLut(ep1.px, PALETTES[2].lut);
+    await page.click('#palette');
+    await sleep(400);
+    const ep2 = await patch(), white = inLut(ep2.px, PALETTES[0].lut);
+    check('desktop', 'Palette cycles to Amber night, then White-hot (grey)', ep1.button === 'Palette: Amber night' && amber.frac >= 0.9 &&
+      ep2.button === 'Palette: White-hot' && white.frac >= 0.9 && white.maxChroma <= 2,
+      { amber: ep1.button + ' ' + amber.frac.toFixed(3), white: ep2.button + ' ' + white.frac.toFixed(3) + ', max channel difference ' + white.maxChroma });
+    await page.click('#palette');      // back to Ironbow for the rest of the run
     await page.click('#eyepiece');
     // letterboxing: a short window caps the picture height (72vh), so the 4:3 frame is pillarboxed
     await page.setViewportSize({ width: 1280, height: 560 });
@@ -341,6 +375,41 @@ SCN.firedoor = async () => {
         await shot(page, 'firedoor_door_marked.png');
       } else check('firedoor', 'tapping a detected door marks the way out at the door', false, 'no door detected to tap');
       check('firedoor', 'no errors, no network (door)', !rec.external.length && !rec.errors.length, rec);
+    } finally { await browser.close(); }
+  }
+  // a held-out indoor window photo (Open Images test split): green WINDOW box, and a tap on it marks the way out there
+  const wclip = e2eClip('still_window');
+  if (!wclip || !fs.existsSync(wclip)) check('firedoor', 'window test clip exists (camera/tests/make_e2e_clips.py --only still_window)', false, wclip);
+  else {
+    const browser = await launch(wclip);
+    const { page, rec } = await newPage(browser);
+    try {
+      await page.goto('file://' + FD_DIST);
+      await page.click('#start');
+      await waitInf(page, 5);
+      let s = await S(page);
+      r.window = { labels: s.labels.slice(-5), window: s.results.window, door: s.results.door };
+      check('firedoor', 'green WINDOW box on the window photo', s.labels.slice(-3).some((l) => /WINDOW/.test(l)), s.labels.slice(-3));
+      const legend = await page.evaluate(() => document.querySelector('.legend').textContent);
+      check('firedoor', 'legend: the green chip names doors and windows', /Way out \(door, window, your mark or navigation\)/.test(legend), legend);
+      const tap = await page.evaluate(() => {
+        const st = window.PSCamera.state, d = st.results && st.results.window && st.results.window[0], fit = st.fit, c = document.getElementById('view');
+        if (!d || !fit) return null;
+        let nx = d.x + d.w / 2; if (st.src.mirror) nx = 1 - nx;
+        const r = c.getBoundingClientRect(), k = r.width / c.width;
+        return { x: r.left + (fit.x + nx * fit.w) * k, y: r.top + (fit.y + (d.y + d.h / 2) * fit.h) * k };
+      });
+      if (tap) {
+        await page.mouse.click(tap.x, tap.y);
+        await sleep(800);
+        s = await S(page);
+        r.window.mark = s.mark;
+        const seen = await page.evaluate(() => [document.getElementById('s-exit').textContent, document.getElementById('s-seen').textContent]);
+        check('firedoor', 'tapping a detected window marks the way out at the window', s.mark && s.mark.window === true && s.mark.at === 'window' && !s.mark.door &&
+          s.log.includes('Way out marked at the window.') && /marked at a window/.test(seen[0]), { mark: s.mark, status: seen, log: s.log.slice(0, 3) });
+        await shot(page, 'firedoor_window_marked.png');
+      } else check('firedoor', 'tapping a detected window marks the way out at the window', false, 'no window detected to tap');
+      check('firedoor', 'no errors, no network (window)', !rec.external.length && !rec.errors.length, rec);
     } finally { await browser.close(); }
   }
   return r;

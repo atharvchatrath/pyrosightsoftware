@@ -2,12 +2,12 @@
 """onnxruntime references for the fire/door op-list parity test (firedoor_parity.js).
 
 Runs camera/firedoor/export/firedoor.onnx on held-out test images (camera/testdata
-fire/door/negatives + the two export/sample_io inputs), preprocessed exactly as the
+fire/door/negatives/window + the export/sample_io inputs), preprocessed exactly as the
 deploy path in firedoor/data.py (whole frame stretched to 320x256, INTER_AREA,
 x = rgb/127.5 - 1), and stores the inputs (NHWC, the op-list layout) and the
 outputs (NCHW, ONNX layout) with runtime/tests/tensorfile.py.
 
-    python3 tests/firedoor_ref.py [--n-fire 12 --n-door 10 --n-neg 8] [-o tests/out/firedoor_ref]
+    python3 tests/firedoor_ref.py [--n-fire 12 --n-door 10 --n-neg 8 --n-window 10] [-o tests/out/firedoor_ref]
 """
 import argparse
 import json
@@ -34,6 +34,7 @@ def main():
     ap.add_argument('--n-fire', type=int, default=12)
     ap.add_argument('--n-door', type=int, default=10)
     ap.add_argument('--n-neg', type=int, default=8)
+    ap.add_argument('--n-window', type=int, default=10)
     a = ap.parse_args()
     so = ort.SessionOptions()
     so.intra_op_num_threads = 2
@@ -41,13 +42,17 @@ def main():
     cases, arrays = [], []
     td = os.path.join(CAMERA, 'testdata')
     picks = []
-    for kind, n in (('fire', a.n_fire), ('door', a.n_door), ('negatives', a.n_neg)):
+    for kind, n in (('fire', a.n_fire), ('door', a.n_door), ('negatives', a.n_neg), ('window', a.n_window)):
+        if not n or not os.path.exists(os.path.join(td, kind, 'manifest.json')):
+            continue
         m = json.load(open(os.path.join(td, kind, 'manifest.json')))
         imgs = m['images']
         step = max(1, len(imgs) // max(1, n))
         for it in imgs[::step][:n]:
             picks.append((kind, os.path.join(td, kind, it['file'])))
-    for name in ('fire', 'door'):
+    for name in ('fire', 'door', 'window'):
+        if not os.path.exists(os.path.join(CAMERA, 'firedoor', 'export', 'sample_io', name + '_input_1x3x256x320.f32')):
+            continue
         raw = np.fromfile(os.path.join(CAMERA, 'firedoor', 'export', 'sample_io', name + '_input_1x3x256x320.f32'), '<f4')
         picks.append(('sample_io', raw.reshape(3, 256, 320)))
     for i, (kind, src) in enumerate(picks):
@@ -59,13 +64,13 @@ def main():
             x = src
             label = 'sample_io/%d' % i
         x = np.ascontiguousarray(x[None].astype(np.float32))
-        heat, wh, off = sess.run(['heat', 'wh', 'off'], {'input': x})
+        names = [o.name for o in sess.get_outputs()]               # heat, wh, off (+ wh_w, off_w: window model)
+        outs = sess.run(names, {'input': x})
         c = 'c%02d' % i
         cases.append(c)
         arrays.append(('in/' + c, x.transpose(0, 2, 3, 1)))         # NHWC for the op list
-        arrays.append(('out/%s/heat' % c, heat))
-        arrays.append(('out/%s/wh' % c, wh))
-        arrays.append(('out/%s/off' % c, off))
+        for n, v in zip(names, outs):
+            arrays.append(('out/%s/%s' % (c, n), v))
         arrays.append(('label/' + c, np.frombuffer(label.encode().ljust(64)[:64], np.uint8).astype(np.float32)))
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     tensorfile.save(a.out, arrays, {'cases': cases, 'onnx': os.path.relpath(a.onnx, CAMERA)})

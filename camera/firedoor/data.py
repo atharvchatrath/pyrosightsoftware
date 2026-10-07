@@ -2,8 +2,8 @@
 
 Each sample yields
   img   [3, H, W] float32, x = rgb / 127.5 - 1
-  heat  [C, h, w] gaussian heatmap target (h = H / 8)
-  mask  [C, h, w] 1 where that class is supervised (fully), 0 = ignore
+  heat  [C, h, w] gaussian heatmap target (h = H / 8); C = 3: fire, door, window
+  mask  [C, h, w] 1 where that class is supervised (fully, or inside the item's `regions`), 0 = ignore
   weak  [h, w]    1 inside regions known to contain fire somewhere (MIL), else 0
   wh    [2, h, w] box size in input pixels at object centres
   off   [2, h, w] centre offset in [0,1) at object centres
@@ -76,7 +76,12 @@ def crop_resize(im, item, out_w, out_h, rng, crop=None):
     M = np.float32([[sx, 0, -x0 * sx], [0, sy, -y0 * sy]])
     interp = cv2.INTER_AREA if sx < 1 and sy < 1 else cv2.INTER_LINEAR
     out = cv2.warpAffine(im, M, (out_w, out_h), flags=interp, borderMode=cv2.BORDER_REFLECT)
-    boxes, ignores = [], []
+    boxes, ignores, regions = [], [], []
+    for r in item.get('regions', ()):
+        nx0, ny0 = max(r[1] * W, x0), max(r[2] * H, y0)
+        nx1, ny1 = min(r[3] * W, x0 + cw), min(r[4] * H, y0 + ch)
+        if nx1 > nx0 and ny1 > ny0:
+            regions.append([int(r[0]), (nx0 - x0) * sx, (ny0 - y0) * sy, (nx1 - x0) * sx, (ny1 - y0) * sy])
     for b in item['boxes']:
         c = int(b[0])
         bx0, by0, bx1, by1 = b[1] * W, b[2] * H, b[3] * W, b[4] * H
@@ -87,11 +92,12 @@ def crop_resize(im, item, out_w, out_h, rng, crop=None):
             continue
         vis = (nx1 - nx0) * (ny1 - ny0) / area
         ob = [(nx0 - x0) * sx, (ny0 - y0) * sy, (nx1 - x0) * sx, (ny1 - y0) * sy]
-        if vis >= 0.4 and ob[2] - ob[0] >= 2 and ob[3] - ob[1] >= 2:
+        group_window = c == 2 and len(b) > 5 and b[5]     # a whole facade of windows: don't care
+        if vis >= 0.4 and ob[2] - ob[0] >= 2 and ob[3] - ob[1] >= 2 and not group_window:
             boxes.append([c] + ob)
         else:
             ignores.append([c] + ob)
-    return out, boxes, ignores
+    return out, boxes, ignores, regions
 
 
 # ------------------------------------------------------------------ photometric
@@ -133,8 +139,9 @@ def photometric(img, rng):
 
 
 # ------------------------------------------------------------------ targets
-def draw_targets(boxes, ignores, sup_tiles, weak_tiles, H=IN_H, W=IN_W):
-    """sup_tiles: list of (x0, y0, x1, y1, sup[C]) in input px; weak_tiles: list of rects."""
+def draw_targets(boxes, ignores, sup_tiles, weak_tiles, H=IN_H, W=IN_W, regions=()):
+    """sup_tiles: list of (x0, y0, x1, y1, sup[C]) in input px; weak_tiles: list of rects;
+    regions: [cls, x0, y0, x1, y1] where channel cls is supervised whatever the tile's sup says."""
     h, w = H // STRIDE, W // STRIDE
     heat = np.zeros((NUM_CLASSES, h, w), np.float32)
     mask = np.zeros((NUM_CLASSES, h, w), np.float32)
@@ -146,7 +153,9 @@ def draw_targets(boxes, ignores, sup_tiles, weak_tiles, H=IN_H, W=IN_W):
         gx0, gy0 = int(round(x0 / STRIDE)), int(round(y0 / STRIDE))
         gx1, gy1 = int(round(x1 / STRIDE)), int(round(y1 / STRIDE))
         for c in range(NUM_CLASSES):
-            mask[c, gy0:gy1, gx0:gx1] = sup[c]
+            mask[c, gy0:gy1, gx0:gx1] = sup[c] if c < len(sup) else 0
+    for r in regions:
+        mask[r[0], int(round(r[2] / STRIDE)):int(round(r[4] / STRIDE)), int(round(r[1] / STRIDE)):int(round(r[3] / STRIDE))] = 1
     for (x0, y0, x1, y1) in weak_tiles:
         weak[int(round(y0 / STRIDE)):int(round(y1 / STRIDE)), int(round(x0 / STRIDE)):int(round(x1 / STRIDE))] = 1
     for b in ignores:      # partially visible objects: don't punish either way
@@ -180,6 +189,7 @@ class TrainSet(Dataset):
         for it in items:
             self.by_kind.setdefault(it['kind'], []).append(it)
         self.mix = mix or {'fire_box': 0.32, 'fire_weak': 0.18, 'door': 0.25, 'neg': 0.25}
+        self.mix = {k: v for k, v in self.mix.items() if self.by_kind.get(k)}
         self.kinds = list(self.mix)
         self.cum = np.cumsum([self.mix[k] for k in self.kinds])
         self.length = length
@@ -193,17 +203,19 @@ class TrainSet(Dataset):
         k = self.kinds[int(np.searchsorted(self.cum, rng.random() * self.cum[-1]))]
         return rng.choice(self.by_kind[k])
 
-    def _tile(self, rng, x0, y0, tw, th, canvas, boxes, ignores, sup_tiles, weak_tiles):
+    def _tile(self, rng, x0, y0, tw, th, canvas, boxes, ignores, sup_tiles, weak_tiles, regions):
         it = self._pick(rng)
         im = imread(it['path'])
-        t, b, ig = crop_resize(im, it, tw, th, rng)
+        t, b, ig, rg = crop_resize(im, it, tw, th, rng)
         if rng.random() < 0.5:
             t = t[:, ::-1]
             b = [[c, tw - x1, y1_, tw - x0_, y2] for c, x0_, y1_, x1, y2 in b]
             ig = [[c, tw - x1, y1_, tw - x0_, y2] for c, x0_, y1_, x1, y2 in ig]
+            rg = [[c, tw - x1, y1_, tw - x0_, y2] for c, x0_, y1_, x1, y2 in rg]
         canvas[y0:y0 + th, x0:x0 + tw] = t
         boxes += [[c, bx0 + x0, by0 + y0, bx1 + x0, by1 + y0] for c, bx0, by0, bx1, by1 in b]
         ignores += [[c, bx0 + x0, by0 + y0, bx1 + x0, by1 + y0] for c, bx0, by0, bx1, by1 in ig]
+        regions += [[c, bx0 + x0, by0 + y0, bx1 + x0, by1 + y0] for c, bx0, by0, bx1, by1 in rg]
         sup_tiles.append((x0, y0, x0 + tw, y0 + th, it['sup']))
         if it['kind'] == 'fire_weak':
             weak_tiles.append((x0, y0, x0 + tw, y0 + th))
@@ -211,16 +223,16 @@ class TrainSet(Dataset):
     def __getitem__(self, idx):
         rng = random.Random((self.seed * 1000003 + idx * 7919 + random.getrandbits(32)))
         canvas = np.zeros((IN_H, IN_W, 3), np.uint8)
-        boxes, ignores, sup_tiles, weak_tiles = [], [], [], []
+        boxes, ignores, sup_tiles, weak_tiles, regions = [], [], [], [], []
         if rng.random() < self.mosaic_p:
             cx = int(round(rng.uniform(0.3, 0.7) * IN_W / STRIDE)) * STRIDE
             cy = int(round(rng.uniform(0.3, 0.7) * IN_H / STRIDE)) * STRIDE
             for (x0, y0, tw, th) in [(0, 0, cx, cy), (cx, 0, IN_W - cx, cy), (0, cy, cx, IN_H - cy), (cx, cy, IN_W - cx, IN_H - cy)]:
-                self._tile(rng, x0, y0, tw, th, canvas, boxes, ignores, sup_tiles, weak_tiles)
+                self._tile(rng, x0, y0, tw, th, canvas, boxes, ignores, sup_tiles, weak_tiles, regions)
         else:
-            self._tile(rng, 0, 0, IN_W, IN_H, canvas, boxes, ignores, sup_tiles, weak_tiles)
+            self._tile(rng, 0, 0, IN_W, IN_H, canvas, boxes, ignores, sup_tiles, weak_tiles, regions)
         img = photometric(canvas, rng)
-        heat, mask, weak, wh, off, reg = draw_targets(boxes, ignores, sup_tiles, weak_tiles)
+        heat, mask, weak, wh, off, reg = draw_targets(boxes, ignores, sup_tiles, weak_tiles, regions=regions)
         x = torch.from_numpy(img.astype(np.float32).transpose(2, 0, 1) / 127.5 - 1.0)
         return x, torch.from_numpy(heat), torch.from_numpy(mask), torch.from_numpy(weak), \
             torch.from_numpy(wh), torch.from_numpy(off), torch.from_numpy(reg)

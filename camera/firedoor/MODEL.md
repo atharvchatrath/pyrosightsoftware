@@ -1,16 +1,20 @@
-# FireDoorNet: fire and door detector for ordinary RGB cameras
+# FireDoorNet: fire, door and window detector for ordinary RGB cameras
 
 A small CenterNet-style detector for the PyroSight Camera web page. It finds **fire / flames**
-(the page draws a PURPLE `#C850FF` box labelled FIRE) and **doors** (a GREEN `#28FF50` box for the exit) in webcam or phone video.
+(the page draws a PURPLE `#C850FF` box labelled FIRE), **doors** and **windows** (GREEN `#28FF50` boxes labelled DOOR and
+WINDOW: ways out) in webcam or phone video.
 It is **not** the thermal PyroNet: it was trained from scratch on RGB photos, starting from an ImageNet MobileNetV2.
+
+The window class was added on 2026-10-07 as a separate branch on the frozen fire/door network, so the fire and door outputs
+are bit for bit those of the earlier 2-class model and every fire and door number below still holds. See "Window class".
 
 | | |
 |---|---|
-| File | `export/firedoor.onnx`, ONNX opset 13, 2,045,975 bytes (fp32) |
-| Weights | 501,722 values: 1.00 MB as fp16, about 1.34 MB as fp16 base64 |
-| Compute | 157.2 M multiply-accumulates per frame (0.31 GFLOP) at 320x256 |
-| Speed | 5.8 ms per frame in onnxruntime, 1 CPU thread (x86 container). Not measured in a browser |
-| Ops | Conv 63 (including depthwise, `group = C`), Clip 34 (ReLU6, min 0 and max 6 as initializers), Relu 10, Add 12, Resize 2, Sigmoid 2. BatchNorm is folded. There are no Constant nodes: every constant is an initializer |
+| File | `export/firedoor.onnx`, ONNX opset 13, 3,478,581 bytes (fp32; the fire/door-only model was 2,045,975) |
+| Weights | 856,072 values: 1.71 MB as fp16, about 2.3 MB as fp16 base64 (fire/door alone: 501,722) |
+| Compute | 203.2 M multiply-accumulates per frame at 320x256 (fire/door alone: 157.2 M) |
+| Speed | fire/door alone: 5.8 ms per frame in onnxruntime, 1 CPU thread (x86 container). In the page see `camera/README.md` |
+| Ops | Conv 87 (including depthwise, `group = C`), Clip 42 (ReLU6, min 0 and max 6 as initializers), Relu 20, Add 16, Resize 4, Sigmoid 3, Mul 2 (box size x 1.0), Concat 1 (the heat channels), Identity 1. BatchNorm is folded. There are no Constant nodes: every constant is an initializer |
 
 ## Input
 - Name `input`, shape **[1, 3, 256, 320]** float32, **NCHW**, **RGB** channel order.
@@ -26,11 +30,15 @@ It is **not** the thermal PyroNet: it was trained from scratch on RGB photos, st
 ## Outputs (all NCHW, batch dimension 1, stride 8 so the grid is 32 rows x 40 columns)
 | name | shape | meaning |
 |---|---|---|
-| `heat` | [1, 2, 32, 40] | sigmoid probability that an object centre falls in this cell. Channel 0 = **fire**, 1 = **door** |
-| `wh` | [1, 2, 32, 40] | box **width** (ch 0) and **height** (ch 1) in model-input pixels (of 320x256), >= 0 (ReLU) |
-| `off` | [1, 2, 32, 40] | centre offset inside the cell, x (ch 0) and y (ch 1), in [0, 1) (Sigmoid) |
+| `heat` | [1, 3, 32, 40] | sigmoid probability that an object centre falls in this cell. Channel 0 = **fire**, 1 = **door**, 2 = **window** |
+| `wh` | [1, 2, 32, 40] | box **width** (ch 0) and **height** (ch 1) in model-input pixels (of 320x256), >= 0 (ReLU), for fire and door boxes |
+| `off` | [1, 2, 32, 40] | centre offset inside the cell, x (ch 0) and y (ch 1), in [0, 1) (Sigmoid), for fire and door boxes |
+| `wh_w` | [1, 2, 32, 40] | the same as `wh`, for **window** boxes |
+| `off_w` | [1, 2, 32, 40] | the same as `off`, for **window** boxes |
 
-Flat index of channel c, row y, column x: `c*1280 + y*40 + x`. Each output is a Float32Array of length 2560.
+Flat index of channel c, row y, column x: `c*1280 + y*40 + x`. `heat` is a Float32Array of length 3840, the others 2560.
+The fire/door-only model had no window channel and no `wh_w`/`off_w`; `decode.js` reads the number of classes from the
+length of `heat` and takes window sizes and offsets from `{windowWh, windowOff}`.
 
 ## Decoding (`decode.js` = `decode.py`, tested identical)
 For each class c and cell (y, x):
@@ -53,6 +61,9 @@ gives identical results (`tools/parity_decode.py`).
 
 ## Operating thresholds (chosen on the *validation* split, then reported on *test*)
 - **fire 0.50**: the lowest threshold with fire false alarms on Open Images hard-negative images at or below 2% on validation (1.7%).
+- **window 0.36** (also the page's): the lowest threshold that puts a WINDOW box on at most 10 % of window look-alike photos
+  (mirrors, picture frames, TVs, monitors, fridges, wardrobes, ...: 9.4 %) and at most 15 % of window-free photos (13.0 %), on the
+  Open Images validation photos. See "Window class".
 - **door 0.35**: door-image precision of at least 0.6 on validation (0.67). The camera page uses **door 0.50** instead:
   on Open Images val/test photos (verification run) 0.35 put a DOOR box on 38 % of real doors but also on 31 % of
   wardrobes, windows and fridges; 0.50 gives 19 % and 7 %. A green DOOR box there should mean a door, at the cost of
@@ -102,6 +113,48 @@ are small, open, side-on or glass. Lockers and wardrobes sometimes come out as d
 of all annotated doors (many are tiny background doors). The rate for the obvious door in front of the camera is higher,
 but we did not measure it separately.
 
+## Window class (added 2026-10-07; `train_window.py`, `model.py` WindowBranch, `runs/window_deep/log.jsonl`)
+- **Branch, not retraining:** the fire/door network (`runs/stage2/best.pt`) is frozen and a window branch reads its backbone
+  features: its own trainable copy of the backbone's last stage (blocks 13-16, stride 32, `--deep`), its own FPN-lite neck and
+  head (64 channels, one depthwise-separable block), started as a copy of the door detector (window channel = door channel),
+  then trained for windows. Fire and door outputs are unchanged bit for bit (validation fire AP 0.790, door AP 0.303 at every
+  epoch). Retraining the whole network with a third class was tried first and lost fire AP (0.79 to 0.73-0.75 in 88 minutes).
+- **Data:** Open Images "Window" boxes. Two problems found on the way: about half of the window photos are cars, buses, trains
+  and planes (their windows are no way out of a building), and most building windows in it are small (on building fronts).
+  Photos with a vehicle label or box are left out (`tools/oi_vehicles.py`), and 6,000 extra training photos whose largest window
+  covers 8-90 % of the picture were added (`tools/oi_select_window_big.py`): 8,504 window photos in training, plus the look-alike
+  photos (mirrors, picture frames, TVs, monitors, fridges, wardrobes, cupboards, closets, bookcases, whiteboards, posters,
+  billboards, laptops, tablets) and verified window-free photos as negatives. Group-of window boxes are ignored.
+- **Training:** 3,600 iterations x 32 images, AdamW lr 1e-3, cosine on wall-clock time, EMA, 50 minutes on 3 CPU threads; mix 50 %
+  window photos, 20 % look-alikes and window-free photos, 15 % door photos, 15 % other negatives; same augmentation as fire/door.
+  The last epoch had the best validation window AP (0.186).
+- **Held-out test** (Open Images test split, vehicle photos left out: 357 window photos with 1,040 windows, 209 of them with a window
+  covering at least 5 % of the picture; 385 look-alike and 1,685 window-free photos). A window counts as found by a WINDOW box with
+  IoU >= 0.3; a WINDOW box is right when it overlaps a window that much. `runs/window_branch` is the first window branch
+  (frozen features only, small windows), for comparison.
+
+| Window, test | **thr 0.36, this model** | thr 0.36, first branch | thr 0.30 | thr 0.40 |
+|---|---|---|---|---|
+| photos with a window covering >= 5 %: one of those windows found | **32 %** | 14 % | 53 % | 23 % |
+| windows covering 20-100 % of the picture found | **24 %** | 1 % | 41 % | 17 % |
+| windows covering 5-20 % found | **35 %** | 23 % | 57 % | 23 % |
+| precision of WINDOW boxes on window photos | **0.73** | 0.69 | 0.62 | 0.79 |
+| look-alike photos with a WINDOW box | **9.6 %** | 14.3 % | 28 % | 4.7 % |
+| window-free photos with a WINDOW box | **11.2 %** | 14.9 % | 28 % | 5.7 % |
+| FireNET fire photos: WINDOW boxes per photo (some show burning houses with windows) | **0.09** | 0.07 | 0.18 | 0.07 |
+
+  On `camera/testdata/window` (40 held-out indoor photos of rooms with windows, 55 windows, chosen without looking at any model's
+  output) a window is found in **17 of 40** photos at 0.36 (27 at 0.30, 13 at 0.40); the first branch found 8 at 0.35.
+- **Rebuild** (from `camera/firedoor`): `tools/oi_train_stream.py`, `tools/oi_select_window.py`, `tools/oi_select_window_big.py 6000`,
+  `tools/oi_download.py` on `data/oi/selection_window.json` and on `data/oi/selection_window_big.json`, `tools/oi_vehicles.py`,
+  `build_index.py`, then `train_window.py --out runs/window_deep --ch 64 --layers 1 --init-door --deep --lr 1e-3 --max-minutes 50` and
+  `export_onnx.py runs/window_deep/best.pt export/firedoor.onnx`. Training stops on wall-clock time, so a rerun on another CPU gives a
+  similar, not identical, model.
+- **Limits:** this is the weakest class with doors. Scores are low and close together (most real windows score 0.25-0.50), so
+  the threshold trades finding windows against false ones quickly. Misses: windows cut by the picture's edge, windows seen
+  at an angle, windows showing only a bright sky. False WINDOW boxes: lampshades, lanterns and bright bulbs, framed pictures, TV screens,
+  signs, and glazed doors (the page drops a WINDOW box that lies on a DOOR box).
+
 ## Training (see `train.py`, `data.py`, `runs/main/log.jsonl`, `runs/stage2/log.jsonl`)
 - Backbone: MobileNetV2 alpha 0.5. Keras ImageNet weights were mapped into PyTorch (`model.load_keras_mnv2`) with symmetric padding.
   The mapping was checked by loading the same Keras weights *with* the classifier top. On 300 Open Images crops of ImageNet-like
@@ -150,13 +203,17 @@ but we did not measure it separately.
   with fp16 weights. Decoded boxes were the same to 3 decimals.
 - Speed: the TF.js **CPU** backend (pure JS) took about **1.5 s per frame** in node. That is too slow for every frame, so on the CPU fallback run
   fire/door every few seconds, or only when WebGL is unavailable. WebGL speed was not measured here (there is no GPU in this container).
-- `export/sample_io/`: `fire.jpg` and `door.jpg` with their exact model input (`*_input_1x3x256x320.f32`, little-endian float32),
-  onnxruntime outputs (`*_{heat,wh,off}_1x2x32x40.f32`) and expected decoded boxes (`*_expected.json`), for checking any runtime.
+- `export/sample_io/`: `fire.jpg`, `door.jpg` and `window.jpg` (a held-out Open Images test photo of a cabin with a window) with their
+  exact model input (`*_input_1x3x256x320.f32`, little-endian float32), onnxruntime outputs (`*_heat_1x3x32x40.f32`,
+  `*_{wh,off,wh_w,off_w}_1x2x32x40.f32`) and expected decoded boxes (`*_expected.json`), for checking any runtime. Rebuild them with
+  `tools/make_sample_io.py`.
 
 ## Files
-- `model.py`: network, Keras weight loader, BN folding. `train.py`, `data.py`: training. `evaluate.py`, `eval_full.py`: metrics.
+- `model.py`: network, Keras weight loader, BN folding, the window branch. `train.py`, `data.py`: training. `train_window.py`: the
+  window branch on the frozen fire/door network. `evaluate.py`, `eval_full.py`: metrics.
 - `export_onnx.py`: export, constant-to-initializer conversion, onnxruntime parity check. Maximum absolute difference against PyTorch:
   heat 1.7e-6, wh 2e-3 px, off 4.6e-6 (`export/firedoor.export.json`).
 - `decode.py` (reference) and `decode.js` (browser and node, UMD: `window.FireDoorDecode` or `require`).
-- `tools/`: data selection and download, test-media builder, parity tests, video evaluation, visualisation.
+- `tools/`: data selection and download (`oi_select_window.py`, `oi_select_window_big.py`, `oi_vehicles.py` for the window data),
+  the held-out window test photos (`make_window_testdata.py`), test-media builder, parity tests, video evaluation, visualisation.
 - `LICENSES.md`: dataset and model licences.

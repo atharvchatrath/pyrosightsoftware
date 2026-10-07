@@ -3,12 +3,13 @@
   "onnx": "firedoor/export/firedoor.onnx",
   "weights": "float16",
   "meta": {
-   "name": "FireDoorNet (fire and door detector, trained on small public datasets)",
-   "credits": "Fire and doors: FireDoorNet, trained here on FireNET (MIT) and Open Images (annotations CC BY 4.0 Google LLC, images CC BY 2.0) from ImageNet MobileNetV2 weights (Apache-2.0).",
+   "name": "FireDoorNet (fire, door and window detector, trained on small public datasets)",
+   "credits": "Fire, doors and windows: FireDoorNet, trained here on FireNET (MIT) and Open Images (annotations CC BY 4.0 Google LLC, images CC BY 2.0) from ImageNet MobileNetV2 weights (Apache-2.0).",
    "decode": {
     "thresholds": {
      "fire": 0.5,
-     "door": 0.5
+     "door": 0.5,
+     "window": 0.36
     },
     "nmsIou": 0.45,
     "maxDet": 50
@@ -28,9 +29,9 @@
  "pages": [
   {
    "file": "dist/pyrosight_camera.html",
-   "bytes": 8535356,
-   "mb": 8.535,
-   "sha256": "299b48c2494b5231f1c3702cf5c2bdaf2049b3b56797242ffdc88e494db93c22",
+   "bytes": 9519019,
+   "mb": 9.519,
+   "sha256": "f681ba66050869197c10dc59d6feb9c981c56efc8ee3370c4ee5d28f44929f2c",
    "title_ok": true,
    "parts": [
     "ps-app",
@@ -49,10 +50,10 @@
    "main_thread_script_bytes": {
     "ps-oplist": 18793,
     "ps-people": 26274,
-    "ps-firedoor": 5388,
-    "ps-engine": 21866,
+    "ps-firedoor": 6181,
+    "ps-engine": 22147,
     "ps-motion": 31414,
-    "ps-app": 120171,
+    "ps-app": 121580,
     "ps-nav": 208477
    },
    "tfjs_http_strings": [
@@ -77,9 +78,9 @@
   },
   {
    "file": "dist/pyrosight_camera.fragment.html",
-   "bytes": 8535223,
-   "mb": 8.535,
-   "sha256": "97786991e236ed96ef7c6c6f426fe27d6561d7967d66a385f370f4ede32461c5",
+   "bytes": 9518886,
+   "mb": 9.519,
+   "sha256": "fe17223c2042d75466605983216870ebab784dba5a21eaf58a8f139baf569f57",
    "title_ok": true,
    "parts": [
     "ps-app",
@@ -98,10 +99,10 @@
    "main_thread_script_bytes": {
     "ps-oplist": 18793,
     "ps-people": 26274,
-    "ps-firedoor": 5388,
-    "ps-engine": 21866,
+    "ps-firedoor": 6181,
+    "ps-engine": 22147,
     "ps-motion": 31414,
-    "ps-app": 120171,
+    "ps-app": 121580,
     "ps-nav": 208477
    },
    "tfjs_http_strings": [
@@ -127,21 +128,21 @@
  ],
  "page_build": {
   "files": {
-   "pyrosight_camera.html": 8535356,
-   "pyrosight_camera.fragment.html": 8535223
+   "pyrosight_camera.html": 9519019,
+   "pyrosight_camera.fragment.html": 9518886
   },
   "parts": {
-   "SHELL": 24372,
+   "SHELL": 24555,
    "TFJS": 1469867,
    "OPLIST": 18793,
    "PEOPLE": 26274,
    "PEOPLE_ASSETS": 5156727,
-   "FIREDOOR": 5388,
-   "ENGINE": 21866,
+   "FIREDOOR": 6181,
+   "ENGINE": 22147,
    "MOTION": 31414,
-   "APP": 119977,
+   "APP": 121386,
    "NAV": 208473,
-   "FIREDOOR_MODEL": 1426170
+   "FIREDOOR_MODEL": 2406344
   },
   "firedoor_included": true,
   "firedoor_source": "/home/claude/pyrosight/camera/build/firedoor/firedoor"

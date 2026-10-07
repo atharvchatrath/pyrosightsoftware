@@ -58,6 +58,11 @@ function buildRunner(g) {
         else if (n.op === 'Resize') {     // nearest, asymmetric, floor, scales [1,1,2,2]
           const sc = loadInit(g.initializers[n.inputs[2]]);
           y = tf.image.resizeNearestNeighbor(x, [x.shape[1] * sc[2], x.shape[2] * sc[3]], false, false);
+        } else if (n.op === 'Identity') y = x || tf.tensor(loadInit(g.initializers[n.inputs[0]]), g.initializers[n.inputs[0]].dims);
+        else if (n.op === 'Mul') y = tf.mul(x, env[n.inputs[1]] || tf.scalar(scalar(n.inputs[1])));
+        else if (n.op === 'Concat') {     // the window model's heat: fire, door (trunk) + window (branch) channels
+          if (n.attrs.axis !== 1) throw new Error('Concat only on the channel axis');
+          y = tf.concat(n.inputs.map((i) => env[i]), 3);
         } else throw new Error('op ' + n.op);
         env[n.outputs[0]] = y;
       }
@@ -72,13 +77,15 @@ function buildRunner(g) {
   const run = buildRunner(g);
   const S = path.join(__dirname, '..', 'export', 'sample_io');
   const rd = (f) => { const b = fs.readFileSync(path.join(S, f)); return new Float32Array(b.buffer, b.byteOffset, b.length / 4); };
-  for (const name of ['fire', 'door']) {
+  for (const name of ['fire', 'door', 'window']) {
+    if (!fs.existsSync(path.join(S, name + '_input_1x3x256x320.f32'))) continue;
     const t0 = Date.now();
-    const [heat, wh, off] = run(rd(name + '_input_1x3x256x320.f32'));
+    const [heat, wh, off, whW, offW] = run(rd(name + '_input_1x3x256x320.f32'));
     const ms = Date.now() - t0;
-    const ref = ['heat', 'wh', 'off'].map((o) => rd(`${name}_${o}_1x2x32x40.f32`));
+    const C = heat.length / 1280;     // classes: 2 (fire, door) or 3 (+ window)
+    const ref = ['heat', 'wh', 'off'].map((o) => rd(`${name}_${o}_1x${o === 'heat' ? C : 2}x32x40.f32`));
     const md = [heat, wh, off].map((a, k) => a.reduce((m, v, i) => Math.max(m, Math.abs(v - ref[k][i])), 0));
-    const dets = D.decode(heat, wh, off);
+    const dets = D.decode(heat, wh, off, whW ? { windowWh: whW, windowOff: offW } : {});
     const exp = JSON.parse(fs.readFileSync(path.join(S, name + '_expected.json'))).detections_default_thresholds;
     console.log(JSON.stringify({ name, weights: path.basename(process.argv[2]), maxAbsDiff: { heat: md[0], wh: md[1], off: md[2] },
       tfjs_dets: dets.map((d) => [d.cls, +d.score.toFixed(3), +d.x.toFixed(3), +d.y.toFixed(3), +d.w.toFixed(3), +d.h.toFixed(3)]),

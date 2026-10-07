@@ -8,7 +8,8 @@ camera), live, inside the browser:
 | a person, including just a face close to the camera | **WHITE** `#FFFFFF` | rough distance, device style: `0.6M`, `2.9M`, `<1.2M` (cut off by the frame edge) |
 | fire / flames | **PURPLE** `#C850FF` | `FIRE` |
 | a door | **GREEN** `#28FF50` | `DOOR` |
-| the way out you marked ("Mark way out", or tap the picture; a tap on a DOOR box marks that door) | **GREEN** `#28FF50` | `EXIT`, or an edge arrow `EXIT 120°` when you have turned away |
+| a window (added 2026-10-07; at most 4 shown, none on a door) | **GREEN** `#28FF50` | `WINDOW` |
+| the way out you marked ("Mark way out", or tap the picture; a tap on a DOOR or WINDOW box marks the way out there) | **GREEN** `#28FF50` | `EXIT`, or an edge arrow `EXIT 120°` when you have turned away |
 | the way out as the navigation estimates it (while **Navigation (demo)** runs; it replaces the mark) | **GREEN** `#28FF50` | `EXIT 5M` sized by distance, `EXIT? 5M` dashed when unsure, an edge arrow when out of view, no box but `FOLLOW HOSE` when unreliable |
 
 The colours are `PS_COLOR_PERSON / PS_COLOR_FIRE / PS_COLOR_EXIT` from
@@ -52,7 +53,7 @@ confidence (GOOD, DEGRADED below 0.6, UNRELIABLE below 0.3).
 
 ## Open it
 
-* **As a file:** double-click `dist/pyrosight_camera.html` (8.5 MB, works offline from `file://`),
+* **As a file:** double-click `dist/pyrosight_camera.html` (9.5 MB, works offline from `file://`),
   press **Start camera**, allow the camera. Chrome, Edge and Firefox allow the camera on local files.
   A laptop/front camera is shown mirrored; the back camera of a phone is not.
 * **As a claude.ai artifact:** publish `dist/pyrosight_camera.fragment.html` (the same page without
@@ -66,6 +67,8 @@ confidence (GOOD, DEGRADED below 0.6, UNRELIABLE below 0.3).
   it at a fire video or a candle (best near the middle of the picture): a purple FIRE box. Point it at a
   closed door, face-on: a green DOOR box, which you can tap to mark the way out there. The door
   threshold is strict, so often no box appears; then tap the door in the picture or press "Mark way out".
+  Point it at a window seen face-on with its whole frame in the picture: a green WINDOW box, which you can
+  tap too. Windows are found in fewer than half of the rooms tried (see Limits).
 
 Detector updates come about every 2 s on this test machine (no GPU, software WebGL; every 3.2-3.6 s
 with WebGL switched off); on a laptop or phone GPU they should be several times faster (not measured,
@@ -81,7 +84,7 @@ python3 camera/build_camera.py --no-firedoor  # fire/door stub build (finds noth
 
 `build_camera.py` exports `firedoor/export/firedoor.onnx` with `runtime/export_oplist.py` (float16
 weights, NHWC outputs, base64) to `build/firedoor/firedoor.oplist.js`, writes the fire/door settings to
-`build/firedoor/meta.json` (thresholds fire 0.50 / door 0.50, the FIRE hysteresis: on at 0.50,
+`build/firedoor/meta.json` (thresholds fire 0.50 / door 0.50 / window 0.36, the FIRE hysteresis: on at 0.50,
 kept while an overlapping box stays at 0.35 or more, and the centre zoom pass: middle 50 % of the
 frame, FIRE from it at 0.60 or more; see `firedoor/MODEL.md` and "Fire/door settings" below), then runs
 `page/build_page.py`, which inlines, in order: `runtime/oplist.js`, `runtime/people.js`,
@@ -117,8 +120,8 @@ tests, TF.js's HTTP model loader that the page never calls); they are listed in
 `dist/pyrosight_camera.build.json`. The browser tests confirm the page makes **no** request other than
 `file:`, `data:` and `blob:`.
 
-Page parts (MB): TF.js 1.47, person + face models 5.16, fire/door model + decoder 1.43, page code and
-markup and engine 0.24, navigation module 0.19. Total 8.50 MB.
+Page parts (MB): TF.js 1.47, person + face models 5.16, fire/door/window model + decoder 2.42 (1.43 before
+the window class), page code and markup and engine 0.24, navigation module 0.21. Total 9.52 MB.
 
 ## Tests
 
@@ -401,6 +404,17 @@ frames show the same scene). In the first run of this round, without the thumbna
 centre-pass boxes from the concert photo also crossed the cut onto the next photo (false FIRE in
 7/29 group updates); with the check, none did.
 
+Re-run 2026-10-07 with the window class (WebGL, same machine and rules, `--only
+windows,doors,fire,faces,nopeople,lights`): **windows** clip (10 held-out photos of rooms with
+windows, `make_e2e_clips.py`): WINDOW in 9 of 17 updates, all 9 on a window; 6 of the 9 photos shown
+got a WINDOW box at least once (the 10th was never analysed in the 60 s). Fire
+28/29 updates on the fire, faces 32/32, DOOR 5/26 (all on a door), no white or purple box on the
+no-people or no-fire photos. WINDOW boxes on photos without labelled windows: a TV screen (nopeople,
+5 updates), a bright bulb (lights, 3), and real but unlabelled windows (a shop front; a building front
+on the doors clip), plus one glazed door while its DOOR score was under 0.50. Median update 1.97-2.35 s (fire,
+door and window model 0.62-1.00 s; it is about 30 % more compute than fire/door alone), tensors flat
+at 506.
+
 Speed and memory (same machine, all 10 runs). This machine ran about 12 % slower on 2026-10-04 than
 on 2026-10-03: the unchanged integration build, re-run back to back with this one on the faces and
 fire clips, took a median 1.77-1.80 s per WebGL update (1.57-1.64 s the day before). This build took
@@ -460,6 +474,13 @@ credits are in `LICENSES.md`.
   side-on, glass and small doors are missed. Wardrobes, windows and fridges were boxed as doors
   often enough (31 % at the model's 0.35) that the page now uses 0.50: 7 % of look-alikes, but only
   19 % of real doors in the verifier's photos.
+* **Windows are weak too** (added 2026-10-07, details in `firedoor/MODEL.md`, "Window class"). On 40
+  held-out photos of rooms with windows, a WINDOW box lands on a window in 17; on Open Images test
+  photos with a big window (at least 5 % of the picture) in 32 %. Windows seen at an angle, cut by the
+  picture's edge or showing only bright sky are often missed. False WINDOW boxes: about 1 in 10 photos
+  of mirrors, pictures, TVs or wardrobes and of window-free scenes (lampshades, bright bulbs, framed pictures,
+  TV screens, signs).
+  A WINDOW box on a DOOR box is dropped (a glazed door is a door), and only the 4 strongest are drawn.
 * **People:** COCO-SSD lite at 300x300 misses small or distant people (overall recall 0.58, 0.76 for
   people at least 20 % of the frame height, crowds 0.43) and can take a lone hand for a person.
   BlazeFace short range finds faces out to about 1.2 m in practice (and misses about half of the faces

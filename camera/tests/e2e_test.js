@@ -3,7 +3,7 @@
 // with Chromium's fake camera fed from the barcoded clips of tests/make_e2e_clips.py.
 //
 //   python3 tests/make_e2e_clips.py --clips-dir DIR
-//   taskset -c 2,3 node tests/e2e_test.js [--secs 60] [--only faces,fire,...] [--cpu-only] [--no-cpu]
+//   taskset -c 2,3 node tests/e2e_test.js [--secs 60] [--only faces,fire,windows,...] [--cpu-only] [--no-cpu]
 //
 // For every clip: open the page from file://, press Start camera, wait for the detectors, then
 // record every detection update for --secs seconds through the page's test hook
@@ -78,18 +78,23 @@ function segOf(clip, frame) {
 function score(name, clip, recs) {
   const s = { updates: recs.length, barcodeOk: 0, person: { gtUpdates: 0, hit: 0, gtPersons: 0, personsFound: 0, boxes: 0, unmatchedBoxes: 0, labels: {} },
     fire: { gtUpdates: 0, any: 0, hit: 0, boxes: 0, falseBoxes: 0, falseUpdates: 0, noGtUpdates: 0 },
-    door: { gtUpdates: 0, any: 0, hit: 0, boxes: 0, otherBoxes: 0 }, perSegment: {} };
+    door: { gtUpdates: 0, any: 0, hit: 0, boxes: 0, otherBoxes: 0, onWindow: 0 },
+    window: { gtUpdates: 0, any: 0, hit: 0, boxes: 0, otherBoxes: 0, offWindow: 0, gtWindows: 0, windowsFound: 0, imagesEverHit: 0, images: 0 },
+    perSegment: {} };
+  const segHit = new Map();
   for (const r of recs) {
     const seg = segOf(clip, r.capture && r.capture.frame);
     if (!seg) continue;
     s.barcodeOk++;
     const gt = seg.gt || {};
-    const ps = s.perSegment[seg.image] || (s.perSegment[seg.image] = { updates: 0, person: 0, fire: 0, door: 0, maxScore: {} });
+    const ps = s.perSegment[seg.image] || (s.perSegment[seg.image] = { updates: 0, person: 0, fire: 0, door: 0, window: 0, maxScore: {} });
+    const win = r.window || [];
     ps.updates++;
     if (r.people.length) ps.person++;
     if (r.fire.length) ps.fire++;
     if (r.door.length) ps.door++;
-    for (const k of ['fire', 'door']) for (const b of r[k]) ps.maxScore[k] = Math.max(ps.maxScore[k] || 0, b.score);
+    if (win.length) ps.window++;
+    for (const k of ['fire', 'door', 'window']) for (const b of (r[k] || [])) ps.maxScore[k] = Math.max(ps.maxScore[k] || 0, b.score);
     // people (white boxes): judge only on clips whose images have people ground truth
     if (gt.person) {
       const persons = gt.person, faces = gt.face || [];
@@ -130,7 +135,23 @@ function score(name, clip, recs) {
       if (r.door.length) s.door.any++;
       if (r.door.some((b) => gt.door.some((g) => iou(g, b) >= 0.3 || centreIn(g, b)))) s.door.hit++;
     } else s.door.otherBoxes += r.door.length;
+    // windows (green, WINDOW)
+    s.window.boxes += win.length;
+    if (gt.window && gt.window.length) {
+      s.window.gtUpdates++;
+      if (win.length) s.window.any++;
+      const on = win.filter((b) => gt.window.some((g) => iou(g, b) >= 0.3 || centreIn(g, b)));
+      if (on.length) { s.window.hit++; segHit.set(seg.image, true); } else if (!segHit.has(seg.image)) segHit.set(seg.image, false);
+      s.window.offWindow += win.length - on.length;
+      s.window.gtWindows += gt.window.length;
+      s.window.windowsFound += gt.window.filter((g) => win.some((b) => iou(g, b) >= 0.3 || centreIn(g, b))).length;
+      // a DOOR box on a window (not on a door): the confusion the window class should remove
+      s.door.onWindow += r.door.filter((b) => gt.window.some((g) => iou(g, b) >= 0.3 || centreIn(g, b)) &&
+        !(gt.door || []).some((g) => iou(g, b) >= 0.3 || centreIn(g, b))).length;
+    } else s.window.otherBoxes += win.length;
   }
+  s.window.images = segHit.size;
+  s.window.imagesEverHit = [...segHit.values()].filter(Boolean).length;
   return s;
 }
 
@@ -177,7 +198,7 @@ async function runClip(name, cpu) {
     res.start = st0;
     res.firstUpdateAfterStartMs = Date.now() - t0;
     const i0 = await page.evaluate(() => window.__psLastDetections.i);
-    const want = { faces: 'people', group: 'people', fire: 'fire', doors: 'door', lights: 'fire', nopeople: 'people', firevideo: null }[name];
+    const want = { faces: 'people', group: 'people', fire: 'fire', doors: 'door', lights: 'fire', nopeople: 'people', firevideo: null, windows: 'window' }[name];
     const tEnd = Date.now() + SECS * 1000;
     let shotTaken = false, marked = false;
     while (Date.now() < tEnd) {
@@ -186,7 +207,8 @@ async function runClip(name, cpu) {
       if (!last) continue;
       let has = want && last[want] && last[want].length > 0;
       if (want === 'people' && last.fire.length) has = false;   // the key person shot shows people only
-      const needSync = (has && !shotTaken) || (name === 'doors' && !cpu && !marked && last.door.length);
+      const tapList = name === 'doors' ? last.door : name === 'windows' ? (last.window || []) : [];
+      const needSync = (has && !shotTaken) || (!cpu && !marked && tapList.length);
       let inSync = clip.segments.length <= 1;
       if (needSync && clip.segments.length > 1) {
         // only when the picture on screen is the image the boxes were found on (slideshow cuts)
@@ -204,21 +226,23 @@ async function runClip(name, cpu) {
       // key screenshots (never of the CCTV news footage)
       if (has && !shotTaken && name !== 'firevideo') {
         await sleep(150);
-        const file = 'e2e_' + tag + '_' + (want === 'people' ? 'white' : want === 'fire' ? 'purple' : 'green') + '.png';
+        const file = (name === 'windows' ? 'window_e2e_' + (cpu ? 'cpu_' : '') : 'e2e_' + tag + '_') + (want === 'people' ? 'white' : want === 'fire' ? 'purple' : 'green') + '.png';
         await page.locator('#screen').screenshot({ path: path.join(SHOTS, file) });
-        res.shots.push({ file, last: { people: last.people, fire: last.fire, door: last.door, capture: last.capture } });
+        res.shots.push({ file, last: { people: last.people, fire: last.fire, door: last.door, window: last.window, capture: last.capture } });
         shotTaken = true;
       }
-      // doors: tap the detected door to mark the way out there (green EXIT box)
-      if (name === 'doors' && !cpu && !marked && last.door.length && inSync) {
-        const d = last.door[0];
+      // doors / windows: tap the detected door or window to mark the way out there (green EXIT box)
+      if (!cpu && !marked && tapList.length && inSync) {
+        const d = tapList[0];
         const p = await canvasPoint(page, d.x + d.w / 2, d.y + d.h / 2);
         await page.mouse.click(p.x, p.y);
         await sleep(400);
         const m = await page.evaluate(() => ({ mark: window.PSCamera.state.mark, exit: window.PSCamera.exitInfo(), log: window.PSCamera.state.log.slice(0, 3).map((l) => l.text) }));
-        res.actions.markDoor = { door: d, mark: m.mark && { door: m.mark.door, how: m.mark.how }, inView: m.exit && m.exit.inView, trusted: m.exit && m.exit.trusted, log: m.log };
-        await page.locator('#screen').screenshot({ path: path.join(SHOTS, 'e2e_exit_marked_on_door.png') });
-        res.shots.push({ file: 'e2e_exit_marked_on_door.png' });
+        const act = { box: d, mark: m.mark && { door: m.mark.door, window: m.mark.window, at: m.mark.at, how: m.mark.how }, inView: m.exit && m.exit.inView, trusted: m.exit && m.exit.trusted, log: m.log };
+        const file = name === 'windows' ? 'window_e2e_exit_marked.png' : 'e2e_exit_marked_on_door.png';
+        if (name === 'windows') res.actions.markWindow = act; else res.actions.markDoor = act;
+        await page.locator('#screen').screenshot({ path: path.join(SHOTS, file) });
+        res.shots.push({ file });
         marked = true;
       }
     }
@@ -237,7 +261,7 @@ async function runClip(name, cpu) {
         const d = g.getImageData(Math.round(fit.x + fit.w * 0.3), Math.round(fit.y + fit.h * 0.3), 40, 40).data;
         let maxChroma = 0;
         for (let i = 0; i < d.length; i += 4) maxChroma = Math.max(maxChroma, Math.abs(d[i] - d[i + 1]), Math.abs(d[i + 1] - d[i + 2]));
-        return { maxChroma };
+        return { maxChroma, palette: window.PSCamera.state.palette, button: document.getElementById('palette').textContent };
       });
       await page.screenshot({ path: path.join(SHOTS, 'e2e_page_desktop.png'), fullPage: true });
     }
@@ -256,7 +280,7 @@ async function runClip(name, cpu) {
     res.backendsSeen = [...new Set(recs.map((r) => r.backend + (r.software ? '(software)' : '')))];
     res.score = score(name, clip, recs);
     res.records = recs.map((r) => ({ i: r.i, frame: r.capture && r.capture.frame, ms: r.ms, tensors: r.tensors,
-      people: r.people.map((b) => b.label), fire: r.fire.map((b) => b.score), door: r.door.map((b) => b.score) }));
+      people: r.people.map((b) => b.label), fire: r.fire.map((b) => b.score), door: r.door.map((b) => b.score), window: (r.window || []).map((b) => b.score) }));
   } catch (e) {
     res.error = String(e && e.stack || e);
   }
@@ -281,11 +305,15 @@ function summary(r) {
   if (s.fire.noGtUpdates) bits.push('   purple on no-fire images: ' + s.fire.falseUpdates + '/' + s.fire.noGtUpdates + ' updates (' + s.fire.falseBoxes + ' boxes)');
   if (s.door.gtUpdates) bits.push('   green: updates with DOOR ' + s.door.any + '/' + s.door.gtUpdates + ', on a door ' + s.door.hit + '/' + s.door.gtUpdates);
   else if (s.door.otherBoxes) bits.push('   DOOR boxes on images without door ground truth: ' + s.door.otherBoxes);
+  if (s.window.gtUpdates) bits.push('   green: updates with WINDOW ' + s.window.any + '/' + s.window.gtUpdates + ', on a window ' + s.window.hit + '/' + s.window.gtUpdates +
+    ', GT windows found ' + s.window.windowsFound + '/' + s.window.gtWindows + ', images boxed at least once ' + s.window.imagesEverHit + '/' + s.window.images +
+    ', WINDOW boxes not on a window ' + s.window.offWindow + '/' + s.window.boxes + ', DOOR boxes on a window ' + s.door.onWindow);
+  else if (s.window.otherBoxes) bits.push('   WINDOW boxes on images without window ground truth: ' + s.window.otherBoxes);
   return bits.join('\n');
 }
 
 (async () => {
-  const names = ONLY ? ONLY.split(',') : ['faces', 'group', 'nopeople', 'fire', 'doors', 'lights', 'firevideo'];
+  const names = ONLY ? ONLY.split(',') : ['faces', 'group', 'nopeople', 'fire', 'doors', 'lights', 'firevideo', 'windows'];
   const cpuNames = ONLY ? names.filter((n) => ['faces', 'fire', 'doors'].includes(n)) : ['faces', 'fire', 'doors'];
   let prev = {};
   try { prev = JSON.parse(fs.readFileSync(RESULTS)); } catch (e) { prev = {}; }

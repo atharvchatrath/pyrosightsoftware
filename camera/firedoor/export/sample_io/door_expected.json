@@ -1,9 +1,15 @@
 {
  "image": "door.jpg",
  "image_size": [
-  480,
-  640
+  640,
+  480
  ],
+ "classes": 3,
+ "thresholds": {
+  "fire": 0.5,
+  "door": 0.35,
+  "window": 0.36
+ },
  "resize": "cv2.resize to 320x256 (INTER_AREA when shrinking), RGB, x/127.5-1, NCHW",
  "detections_default_thresholds": [
   {

@@ -1,9 +1,15 @@
 {
  "image": "fire.jpg",
  "image_size": [
-  252,
-  200
+  200,
+  252
  ],
+ "classes": 3,
+ "thresholds": {
+  "fire": 0.5,
+  "door": 0.35,
+  "window": 0.36
+ },
  "resize": "cv2.resize to 320x256 (INTER_AREA when shrinking), RGB, x/127.5-1, NCHW",
  "detections_default_thresholds": [
   {

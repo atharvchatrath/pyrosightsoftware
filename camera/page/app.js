@@ -7,8 +7,8 @@
  * Boxes (same colours as core/include/pyrosight/ps_display.h):
  *   person  WHITE  #FFFFFF  label = distance estimate, device style ("1.2M")
  *   fire    PURPLE #C850FF  "FIRE"
- *   exit    GREEN  #28FF50  "DOOR" (fire/door model) and "EXIT" (the viewer's mark, or the
- *                           navigation's estimate while Navigation runs: "EXIT 5M")
+ *   exit    GREEN  #28FF50  "DOOR" and "WINDOW" (fire/door/window model) and "EXIT" (the viewer's
+ *                           mark, or the navigation's estimate while Navigation runs: "EXIT 5M")
  *
  * Navigation (demo): the eyepiece's own way-out code (camera/nav, global PSNav, inlined right
  * after this script); see "navigation (demo)" below.
@@ -19,7 +19,7 @@
  *   2. an adapter around PS_OPLIST_ASSETS.firedoor + FireDoorDecode, if both exist;
  *   3. a STUB (finds nothing), clearly reported as such on the page.
  * A detector is {name, stub?, credits?, init(tf) -> Promise, detect(pixels) ->
- * Promise<[{cls: 'fire'|'door', score, x, y, w, h}]>, dispose()}; pixels is a
+ * Promise<[{cls: 'fire'|'door'|'window', score, x, y, w, h}]>, dispose()}; pixels is a
  * tf.Tensor3D [H, W, 3] RGB 0..255 that the detector must NOT dispose; boxes are
  * normalised 0..1 (x, y = top-left) in that image. PSCamera.setFireDoorDetector()
  * swaps it at run time.
@@ -63,7 +63,7 @@
     stream: null, devices: [], facing: null, mirrorOverride: qs.get('mirror'),
     busy: false, results: null, lastPersons: null, cycle: 0, lastInferEnd: 0, lastInferVideoTime: -1,
     inferredSrc: null, inferError: null,
-    eyepiece: false, palette: 0, voice: false,
+    eyepiece: false, palette: 1, voice: false,    // palette 1 = Ironbow (EYE_PALETTES): thermal colours by default
     mark: null, markLostSaid: false,
     exitSector: null, exitSectorSince: 0, lastExitSay: -1e9,
     al: {}, log: [], spoken: new Map(),
@@ -920,8 +920,10 @@
       }
       const fd = r.fd || [];
       if (state.src !== src) return;     // source changed meanwhile
+      const door = fd.filter((d) => d.cls === 'door');
       const res = {
-        people, fire: fd.filter((d) => d.cls === 'fire'), door: fd.filter((d) => d.cls === 'door'),
+        people, fire: fd.filter((d) => d.cls === 'fire'), door,
+        window: windowsShown(fd.filter((d) => d.cls === 'window'), door),
         pose: capPose, t: t0, w: W, h: H,
         ms: { person: runPerson ? r.ms.person : null, face: r.ms.face, firedoor: r.ms.firedoor, total: performance.now() - t0 },
       };
@@ -937,7 +939,7 @@
       if (state.stats.tensors.length > 2000) state.stats.tensors.splice(0, 1000);
       state.stats.ms.push(res.ms);
       if (state.stats.ms.length > 500) state.stats.ms.splice(0, 250);
-      state.stats.labels.push(people.map((d) => d.label || '?').concat(res.fire.map(() => 'FIRE'), res.door.map(() => 'DOOR')).join(' '));
+      state.stats.labels.push(people.map((d) => d.label || '?').concat(res.fire.map(() => 'FIRE'), res.door.map(() => 'DOOR'), res.window.map(() => 'WINDOW')).join(' '));
       if (state.stats.labels.length > 500) state.stats.labels.splice(0, 250);
       publishDetections(res, src, capInfo);
       state.upsTimes.push(performance.now());
@@ -1069,6 +1071,7 @@
       people: res.people.map((d) => box(d, { label: d.label || '', from: d.src, dist: d.dist == null ? null : +d.dist.toFixed(2) })),
       fire: res.fire.map((d) => box(d, { label: 'FIRE' })),
       door: res.door.map((d) => box(d, { label: 'DOOR' })),
+      window: (res.window || []).map((d) => box(d, { label: 'WINDOW' })),
       capture: capInfo || null,
     };
     window.__psLastDetections = rec;
@@ -1138,9 +1141,11 @@
     if (res) {
       const sh = shiftSince(res, src);
       const mv = (b) => ({ x: b.x + sh.dx, y: b.y + sh.dy, w: b.w, h: b.h });
-      for (const d of res.door) {
-        if (exitBox && iou(mv(d), exitBox) > 0.3) continue;   // the EXIT mark is on this door: one green box
-        drawBox(toCanvas(mv(d), fit, src.mirror), COL.exit, 'DOOR', fit, s, labels, 1);
+      for (const [list, word] of [[res.door, 'DOOR'], [res.window || [], 'WINDOW']]) {
+        for (const d of list) {
+          if (exitBox && iou(mv(d), exitBox) > 0.3) continue;   // the EXIT mark is on this door or window: one green box
+          drawBox(toCanvas(mv(d), fit, src.mirror), COL.exit, word, fit, s, labels, 1);
+        }
       }
       for (const d of res.people) drawBox(toCanvas(mv(d), fit, src.mirror), COL.person, d.label || '', fit, s, labels, 2);
       for (const d of res.fire) drawBox(toCanvas(mv(d), fit, src.mirror), COL.fire, 'FIRE', fit, s, labels, 3);
@@ -1167,6 +1172,18 @@
     const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
     const i = ix * iy, u = a.w * a.h + b.w * b.h - i;
     return u > 0 ? i / u : 0;
+  }
+
+  // WINDOW boxes shown: none where a DOOR box is (a glazed door is a door), and only the strongest
+  // MAX_WINDOWS (a building front can hold dozens of windows; a few green boxes already show the way)
+  const MAX_WINDOWS = 4;
+  function windowsShown(wins, doors) {
+    const onDoor = (w, d) => {
+      const ix = Math.max(0, Math.min(w.x + w.w, d.x + d.w) - Math.max(w.x, d.x));
+      const iy = Math.max(0, Math.min(w.y + w.h, d.y + d.h) - Math.max(w.y, d.y));
+      return iou(w, d) >= 0.3 || ix * iy >= 0.6 * w.w * w.h;
+    };
+    return wins.filter((w) => !doors.some((d) => onDoor(w, d))).sort((a, b) => b.score - a.score).slice(0, MAX_WINDOWS);
   }
 
   function setFont(px) { g.font = '700 ' + Math.round(px) + 'px ' + MONO; }
@@ -1404,31 +1421,33 @@
   function markWayOut(nx, ny, how) {
     const src = state.src;
     if (!src || !src.w) return false;
-    let cx = nx, cy = ny, size = { w: 14, h: 28 }, door = null;
+    let cx = nx, cy = ny, size = { w: 14, h: 28 }, door = null, at = null;
     const res = state.results;
-    if (res && res.door.length) {
-      // snap to a detected door at the tapped point (or near the centre for the button)
+    const ways = res ? res.door.map((d) => [d, 'door']).concat((res.window || []).map((d) => [d, 'window'])) : [];
+    if (ways.length) {
+      // snap to a detected door or window at the tapped point (or near the centre for the button)
       const sh = shiftSince(res, src);
       let best = null, bestD = how === 'tap' ? 0 : 0.2;
-      for (const d of res.door) {
-        const b = { x: d.x + sh.dx, y: d.y + sh.dy, w: d.w, h: d.h };
+      for (const [d, kind] of ways) {
+        const b = { x: d.x + sh.dx, y: d.y + sh.dy, w: d.w, h: d.h, kind };
         const inside = nx >= b.x && nx <= b.x + b.w && ny >= b.y && ny <= b.y + b.h;
         const dist = Math.hypot(b.x + b.w / 2 - nx, b.y + b.h / 2 - ny);
         if (inside && (!best || dist < bestD)) { best = b; bestD = dist; }
         else if (!inside && how !== 'tap' && dist < bestD) { best = b; bestD = dist; }
       }
       if (best) {
-        door = best; cx = best.x + best.w / 2; cy = best.y + best.h / 2;
+        at = best.kind; door = best.kind === 'door' ? best : null;
+        cx = best.x + best.w / 2; cy = best.y + best.h / 2;
         size = M.boxAngles(best, src.w, src.h, FOV);
       }
     }
     if (src.live) tracker.reanchor();   // a mark made while the picture is not matching starts a fresh key frame
     const dir = M.pointToDirection(cx, cy, tracker.pose, src.w, src.h, FOV);
-    state.mark = { yaw: dir.yaw, pitch: dir.pitch, w: Math.max(4, size.w), h: Math.max(6, size.h), t: performance.now(), door: !!door, how };
+    state.mark = { yaw: dir.yaw, pitch: dir.pitch, w: Math.max(4, size.w), h: Math.max(6, size.h), t: performance.now(), door: !!door, window: at === 'window', at, how };
     tracker.hasMark = true;
     state.markLostSaid = false; state.exitSector = null; state.exitOutSince = 0; state.lastExitSay = performance.now();
     $('clear-mark').hidden = false;
-    say(door ? 'Way out marked at the door.' : 'Way out marked.', { minGap: 0 });
+    say(at ? 'Way out marked at the ' + at + '.' : 'Way out marked.', { minGap: 0 });
     updateStatus(true);
     return true;
   }
@@ -1617,7 +1636,7 @@
       const parts = [];
       if (res.ms.person != null) parts.push('people ' + Math.round(res.ms.person) + ' ms');
       if (res.ms.face != null) parts.push('faces ' + Math.round(res.ms.face) + ' ms');
-      if (state.fd && !state.fd.stub) parts.push('fire/doors ' + Math.round(res.ms.firedoor) + ' ms');
+      if (state.fd && !state.fd.stub) parts.push('fire/doors/windows ' + Math.round(res.ms.firedoor) + ' ms');
       let txt = parts.join(', ');
       if (src && src.live) txt += ' · ' + ups.toFixed(1) + ' checks/s · video ' + state.fps.toFixed(0) + ' fps';
       setV('s-speed', txt);
@@ -1635,6 +1654,7 @@
       if (res.people.length) bits.push(plural(res.people.length, 'person', 'people') + (near ? ' (nearest about ' + near.dist.toFixed(1) + ' m)' : ''));
       if (res.fire.length) bits.push(plural(res.fire.length, 'fire', 'fires'));
       if (res.door.length) bits.push(plural(res.door.length, 'door', 'doors'));
+      if (res.window && res.window.length) bits.push(plural(res.window.length, 'window', 'windows'));
       setV('s-seen', bits.length ? bits.join(', ') : 'Nothing found');
     } else setV('s-seen', '–');
     // way out
@@ -1642,7 +1662,7 @@
     if (navUi.on) navStatusLine();
     else if (!p) setV('s-exit', 'Not marked');
     else if (!p.trusted) setV('s-exit', 'Tracking lost: point the camera back where it was, or mark it again', 'warn');
-    else if (p.inView) setV('s-exit', 'In view' + (state.mark.door ? ' (marked at a door)' : '') + (p.unsure ? ' (unsure: picture not matching)' : ''), p.unsure ? 'warn' : '');
+    else if (p.inView) setV('s-exit', 'In view' + (state.mark.at ? ' (marked at a ' + state.mark.at + ')' : '') + (p.unsure ? ' (unsure: picture not matching)' : ''), p.unsure ? 'warn' : '');
     else {
       const deg = Math.round(Math.abs(p.bearing));
       setV('s-exit', (Math.abs(p.bearing) > 135 ? 'Behind you (' + deg + '° turn)' : deg + '° to your ' + (p.bearing > 0 ? 'left' : 'right') +

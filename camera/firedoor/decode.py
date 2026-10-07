@@ -1,10 +1,12 @@
 """Reference decoder for FireDoorNet outputs (mirrors decode.js exactly).
 
 Inputs are the three ONNX outputs for ONE image, NCHW with the batch dim dropped:
-  heat [2, GH, GW]  sigmoid probabilities (class 0 fire, 1 door)
+  heat [C, GH, GW]  sigmoid probabilities (class 0 fire, 1 door, 2 window; C = 2 for the old 2-class model)
   wh   [2, GH, GW]  width, height in model-input pixels (IN_W x IN_H = 320 x 256)
   off  [2, GH, GW]  centre offset x, y within the cell, [0, 1)
-Returns a list of dicts {cls: 'fire'|'door', score, x, y, w, h} with x, y = top-left corner and
+The window model also outputs wh_w, off_w [2, GH, GW]: the size and offset of WINDOW boxes (pass them
+as wh_w=, off_w=; fire and door boxes always use wh, off).
+Returns a list of dicts {cls: 'fire'|'door'|'window', score, x, y, w, h} with x, y = top-left corner and
 w, h the size, all normalised to [0, 1] of the input frame (multiply by video width/height).
 """
 from __future__ import annotations
@@ -12,9 +14,9 @@ from __future__ import annotations
 import numpy as np
 
 IN_W, IN_H, STRIDE = 320, 256, 8
-CLASS_NAMES = ('fire', 'door')
+CLASS_NAMES = ('fire', 'door', 'window')
 # operating thresholds chosen on validation data (see MODEL.md)
-THRESHOLDS = {'fire': 0.50, 'door': 0.35}
+THRESHOLDS = {'fire': 0.50, 'door': 0.35, 'window': 0.36}
 
 
 def iou(a, b):
@@ -27,7 +29,7 @@ def iou(a, b):
     return inter / (a['w'] * a['h'] + b['w'] * b['h'] - inter)
 
 
-def decode(heat, wh, off, thresholds=None, max_det=50, nms_iou=0.45, min_score=None):
+def decode(heat, wh, off, thresholds=None, max_det=50, nms_iou=0.45, min_score=None, wh_w=None, off_w=None):
     """thresholds: dict per class name (defaults to THRESHOLDS); min_score overrides all (for AP)."""
     thr = dict(THRESHOLDS if thresholds is None else thresholds)
     heat = np.asarray(heat, np.float32)
@@ -35,17 +37,18 @@ def decode(heat, wh, off, thresholds=None, max_det=50, nms_iou=0.45, min_score=N
     dets = []
     for c in range(C):
         t = min_score if min_score is not None else thr[CLASS_NAMES[c]]
+        cwh, coff = (wh_w, off_w) if (CLASS_NAMES[c] == 'window' and wh_w is not None) else (wh, off)
         hm = heat[c]
         pad = np.pad(hm, 1, mode='constant', constant_values=-1.0)
         nb = np.max(np.stack([pad[1 + dy:1 + dy + GH, 1 + dx:1 + dx + GW]
                               for dy in (-1, 0, 1) for dx in (-1, 0, 1)]), axis=0)
         ys, xs = np.nonzero((hm >= t) & (hm >= nb))
         for gy, gx in zip(ys, xs):
-            w, h = float(wh[0, gy, gx]), float(wh[1, gy, gx])
+            w, h = float(cwh[0, gy, gx]), float(cwh[1, gy, gx])
             if w < 1.0 or h < 1.0:
                 continue
-            cx = (gx + float(off[0, gy, gx])) * STRIDE
-            cy = (gy + float(off[1, gy, gx])) * STRIDE
+            cx = (gx + float(coff[0, gy, gx])) * STRIDE
+            cy = (gy + float(coff[1, gy, gx])) * STRIDE
             x0, y0 = max(0.0, cx - w / 2), max(0.0, cy - h / 2)
             x1, y1 = min(float(IN_W), cx + w / 2), min(float(IN_H), cy + h / 2)
             dets.append(dict(cls=CLASS_NAMES[c], score=float(hm[gy, gx]),

@@ -206,7 +206,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
           <canvas id="view" width="640" height="480" role="img" aria-label="Camera picture with detection boxes"></canvas>
           <div class="overlay" id="overlay">
             <div class="box">
-              <p class="big" id="ov-title">Point your camera at a face, a fire or a door</p>
+              <p class="big" id="ov-title">Point your camera at a face, a fire, a door or a window</p>
               <p class="small" id="ov-text">The picture is checked on this device. Video never leaves your device.</p>
               <div class="row" style="justify-content:center">
                 <button class="primary" id="ov-start">Start camera</button>
@@ -219,7 +219,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
         <div class="legend" aria-label="Box colours">
           <span class="chip"><i class="sw person"></i>Person</span>
           <span class="chip"><i class="sw fire"></i>Fire</span>
-          <span class="chip"><i class="sw exit"></i>Way out (door, your mark or navigation)</span>
+          <span class="chip"><i class="sw exit"></i>Way out (door, window, your mark or navigation)</span>
         </div>
 
         <div class="controls" aria-label="Controls">
@@ -244,7 +244,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
           <div class="row">
             <button id="voice" aria-pressed="false">Voice: off</button>
             <button id="eyepiece" aria-pressed="false">Eyepiece view: off</button>
-            <button id="palette" hidden>Palette: White-hot</button>
+            <button id="palette" hidden>Palette: Ironbow</button>
           </div>
           <div class="stack"><p class="hint" id="hint">Mark way out remembers where the camera points now; or tap the picture to mark that spot.</p><p class="hint off" aria-hidden="true" id="hint-size1"></p><p class="hint off" aria-hidden="true" id="hint-size2"></p></div>
         </div>
@@ -310,7 +310,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
           <div class="stat"><div class="k">Source</div><div class="v" id="s-source">None</div></div>
           <div class="stat"><div class="k">Detector speed</div><div class="v" id="s-speed">–</div></div>
           <div class="stat"><div class="k">Runs on</div><div class="v" id="s-engine">Loading…</div></div>
-          <div class="stat"><div class="k">Fire and doors</div><div class="v" id="s-fd">Loading…</div></div>
+          <div class="stat"><div class="k">Fire, doors and windows</div><div class="v" id="s-fd">Loading…</div></div>
         </div>
       </section>
 
@@ -321,7 +321,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
         <p>Mark way out remembers a direction and follows it as you turn the camera, from how the picture moves and from the motion sensor on phones that report one. It does not know how far you have walked.</p>
         <p>Navigation (demo) runs the eyepiece’s own way-back-out code: it counts steps and turns from the entry, so its estimate drifts with every step, and its confidence drops as it does. A phone in your hand is not the device’s body-worn sensor, so expect larger errors. Demo walk is a simulation. While navigation runs, the green EXIT marker in the picture comes from it instead of from your mark.</p>
         <p>Distances are rough estimates from the size of a face or body and an assumed camera field of view of 65°.</p>
-        <p>The fire and door detector is small and was trained on a few hundred public fire photos and a few thousand door photos. It misses many small or distant flames (a candle or lighter is found more often near the middle of the picture), can box a bright bulb, lamp, LED or low sun as fire, and finds only clear, face-on doors.</p>
+        <p>The fire, door and window detector is small and was trained on a few hundred public fire photos, about 3,000 door photos and 8,500 window photos. It misses many small or distant flames (a candle or lighter is found more often near the middle of the picture), can box a bright bulb, lamp, LED or low sun as fire, and finds only clear, face-on doors. It finds a window in fewer than half of the photos of rooms with a window, and now and then boxes a lamp, picture or screen as one.</p>
         <p class="hint" id="credits">People and faces: COCO-SSD (TensorFlow.js models) and MediaPipe BlazeFace, Apache-2.0. TensorFlow.js, Apache-2.0.</p>
         <div class="row" style="margin-top:10px">
           <button id="save2" hidden>Save this page and open it in your browser</button>

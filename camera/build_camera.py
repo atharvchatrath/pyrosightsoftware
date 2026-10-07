@@ -49,13 +49,16 @@ MAX_BYTES = 15_000_000
 TITLE = 'PyroSight Camera'
 
 FIREDOOR_META = {
-    'name': 'FireDoorNet (fire and door detector, trained on small public datasets)',
-    'credits': ('Fire and doors: FireDoorNet, trained here on FireNET (MIT) and Open Images '
+    'name': 'FireDoorNet (fire, door and window detector, trained on small public datasets)',
+    'credits': ('Fire, doors and windows: FireDoorNet, trained here on FireNET (MIT) and Open Images '
                 '(annotations CC BY 4.0 Google LLC, images CC BY 2.0) from ImageNet MobileNetV2 weights (Apache-2.0).'),
     # door 0.50, not the 0.35 of firedoor/MODEL.md: at 0.35 a DOOR box landed on wardrobes, windows and
     # fridges (31 % of look-alike photos) almost as often as on real doors (38 %); at 0.50 it is 7 % vs 19 %
     # (verify_quality, Open Images val/test). A green DOOR box should mean a door.
-    'decode': {'thresholds': {'fire': 0.50, 'door': 0.50}, 'nmsIou': 0.45, 'maxDet': 50},
+    # window 0.36, chosen on Open Images validation photos (vehicles left out): the lowest threshold with a WINDOW
+    # box on at most 10 % of window look-alike photos (mirrors, TVs, pictures, fridges, ...: 9 %) and at most
+    # 15 % of window-free photos (13 %); see firedoor/MODEL.md, "Window class"
+    'decode': {'thresholds': {'fire': 0.50, 'door': 0.50, 'window': 0.36}, 'nmsIou': 0.45, 'maxDet': 50},
     'hysteresis': {'on': 0.50, 'keep': 0.35, 'iou': 0.1, 'maxGapMs': 5000},
     # centre zoom pass (page/app.js fireDoorAdapter): the middle half of the frame is also run at full
     # model input size; its FIRE boxes turn on at 0.60. Small flames (verify_quality small set, 30 each):

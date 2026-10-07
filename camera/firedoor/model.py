@@ -2,7 +2,7 @@
 
 Input  [1, 3, 256, 320] float32, NCHW, RGB, x = pixel / 127.5 - 1   (pixel in 0..255)
 Outputs (stride 8, grid 32 x 40):
-  heat [1, 2, 32, 40]  sigmoid probability per class (0 fire, 1 door)
+  heat [1, 3, 32, 40]  sigmoid probability per class (0 fire, 1 door, 2 window)
   wh   [1, 2, 32, 40]  box width, height in input pixels (ReLU, >= 0)
   off  [1, 2, 32, 40]  sub-cell centre offset in [0, 1) (Sigmoid), x then y
 
@@ -22,10 +22,11 @@ import torch.nn.functional as F
 
 IN_H, IN_W = 256, 320
 STRIDE = 8
-NUM_CLASSES = 2          # 0 fire, 1 door
-CLASS_NAMES = ('fire', 'door')
+NUM_CLASSES = 3          # 0 fire, 1 door, 2 window (the window class was added on 2026-10-07)
+CLASS_NAMES = ('fire', 'door', 'window')
 WH_SCALE = 32.0
 ALPHA = 0.5
+DEEP_FROM = 13           # first backbone block of the last (stride 32) stage, see WindowBranch(deep=True)
 
 
 def _md(v, d=8):
@@ -160,8 +161,9 @@ def dws(cin, cout):
 
 
 class FireDoorNet(nn.Module):
-    def __init__(self, neck=64, alpha=ALPHA):
+    def __init__(self, neck=64, alpha=ALPHA, num_classes=None):
         super().__init__()
+        num_classes = NUM_CLASSES if num_classes is None else num_classes
         self.backbone = MobileNetV2(alpha)
         c8, c16, c32 = _md(32 * alpha), _md(96 * alpha), _md(320 * alpha)
         self.lat32 = ConvBN(c32, neck, 1, act='relu')
@@ -171,7 +173,7 @@ class FireDoorNet(nn.Module):
         self.fuse16 = dws(neck, neck)
         self.fuse8 = dws(neck, neck)
         self.head = dws(neck, neck)
-        self.heat = nn.Conv2d(neck, NUM_CLASSES, 1)
+        self.heat = nn.Conv2d(neck, num_classes, 1)
         self.wh = nn.Conv2d(neck, 2, 1)
         self.off = nn.Conv2d(neck, 2, 1)
         self.register_buffer('wh_scale', torch.tensor(WH_SCALE))
@@ -182,6 +184,13 @@ class FireDoorNet(nn.Module):
         nn.init.constant_(self.wh.bias, 1.0)
         nn.init.normal_(self.off.weight, 0, 0.01)
         nn.init.constant_(self.off.bias, 0.0)
+
+    def neck_head(self, f8, f16, f32):
+        """heat logits, wh (scaled, before the final ReLU), off logits"""
+        p16 = self.fuse16(self.lat16(f16) + self.up(self.lat32(f32)))
+        p8 = self.fuse8(self.lat8(f8) + self.up(p16))
+        h = self.head(p8)
+        return self.heat(h), self.wh(h) * self.wh_scale, self.off(h)
 
     def forward(self, x):
         f8, f16, f32 = self.backbone(x)
@@ -198,6 +207,126 @@ class FireDoorNet(nn.Module):
         return heat, wh, torch.sigmoid(self.off(h))
 
 
+def load_expanding(model: 'FireDoorNet', path: str):
+    """Load a checkpoint; a 2-class (fire, door) heat head is copied into the first two channels and
+    the new class channels keep their fresh initialisation (weights N(0, 0.01), bias -4.6)."""
+    sd = torch.load(path, map_location='cpu')
+    own = model.state_dict()
+    new = []
+    for k, v in sd.items():
+        if k in own and own[k].shape != v.shape and k.startswith('heat.'):
+            t = own[k].clone()
+            t[:v.shape[0]] = v
+            sd[k] = t
+            new.append(k)
+    model.load_state_dict(sd)
+    return new
+
+
+class WindowBranch(nn.Module):
+    """The window class: its own small FPN neck and CenterNet head on the (frozen) backbone features
+    of FireDoorNet, so the fire and door outputs stay exactly those of the 2-class model.
+    ch/head/layers: 48/64/2 (first version, trained from scratch) or 64/64/1 (the trunk's own neck and
+    head layout, so it can start as a copy of the door detector, see init_window_from_door).
+    deep: the branch also has its own trainable copy of the backbone's last stage (blocks 13-16, stride
+    32) and reads its stride-32 features from that instead of the trunk's (frozen) ones: a window that
+    fills much of the view needs features the fire/door network was never trained to make."""
+
+    def __init__(self, ch=48, head=64, layers=2, alpha=ALPHA, deep=False):
+        super().__init__()
+        self.deep = nn.ModuleList(MobileNetV2(alpha).blocks[DEEP_FROM:]) if deep else None
+        c8, c16, c32 = _md(32 * alpha), _md(96 * alpha), _md(320 * alpha)
+        self.lat32 = ConvBN(c32, ch, 1, act='relu')
+        self.lat16 = ConvBN(c16, ch, 1, act='relu')
+        self.lat8 = ConvBN(c8, ch, 1, act='relu')
+        self.up = nn.Upsample(scale_factor=2, mode='nearest')
+        self.fuse16 = dws(ch, ch)
+        self.fuse8 = dws(ch, ch)
+        self.head = dws(ch, head) if layers == 1 else nn.Sequential(dws(ch, head), *[dws(head, head) for _ in range(layers - 1)])
+        self.heat = nn.Conv2d(head, 1, 1)
+        self.wh = nn.Conv2d(head, 2, 1)
+        self.off = nn.Conv2d(head, 2, 1)
+        self.register_buffer('wh_scale', torch.tensor(WH_SCALE))
+        nn.init.constant_(self.heat.bias, -4.6)
+        nn.init.normal_(self.heat.weight, 0, 0.01)
+        nn.init.normal_(self.wh.weight, 0, 0.01)
+        nn.init.constant_(self.wh.bias, 1.0)
+        nn.init.normal_(self.off.weight, 0, 0.01)
+        nn.init.constant_(self.off.bias, 0.0)
+
+    def forward(self, f8, f16, f32):
+        if self.deep is not None:
+            f32 = f16
+            for b in self.deep:
+                f32 = b(f32)
+        p16 = self.fuse16(self.lat16(f16) + self.up(self.lat32(f32)))
+        p8 = self.fuse8(self.lat8(f8) + self.up(p16))
+        h = self.head(p8)
+        return self.heat(h), self.wh(h) * self.wh_scale, self.off(h)
+
+
+def window_config(sd):
+    """(ch, head, layers, deep) of the window branch in a FireDoorWindowNet state dict."""
+    ch = sd['window.lat8.0.weight'].shape[0]
+    head = sd['window.heat.weight'].shape[1]
+    deep = any(k.startswith('window.deep.') for k in sd)
+    if 'window.head.0.0.0.weight' not in sd:        # head = one dws block
+        return ch, head, 1, deep
+    return ch, head, sum(1 for i in range(16) if 'window.head.%d.0.0.weight' % i in sd), deep
+
+
+def init_window_from_door(model: 'FireDoorWindowNet'):
+    """Start the window branch (64/64/1 layout) as a copy of the trunk's neck and head, the window heat
+    channel as a copy of the door channel: a door detector, which training then turns into a window one."""
+    t, w = model.trunk, model.window
+    for name in ('lat32', 'lat16', 'lat8', 'fuse16', 'fuse8', 'head', 'wh', 'off'):
+        getattr(w, name).load_state_dict(getattr(t, name).state_dict())
+    w.heat.weight.data.copy_(t.heat.weight.data[1:2])
+    w.heat.bias.data.copy_(t.heat.bias.data[1:2])
+    w.wh_scale.copy_(t.wh_scale)
+    if w.deep is not None:
+        for wb, tb in zip(w.deep, t.backbone.blocks[DEEP_FROM:]):
+            wb.load_state_dict(tb.state_dict())
+
+
+class FireDoorWindowNet(nn.Module):
+    """FireDoorNet (fire, door; frozen) + WindowBranch. Outputs:
+      heat  [B, 3, H, W]  0 fire, 1 door, 2 window (logits; sigmoid probabilities in export mode)
+      wh    [B, 2, H, W]  box size for fire and door boxes  (exactly the 2-class model's)
+      off   [B, 2, H, W]  centre offset for fire and door    (exactly the 2-class model's)
+      wh_w  [B, 2, H, W]  box size for window boxes
+      off_w [B, 2, H, W]  centre offset for window boxes
+    so the fire and door boxes are those of the shipped 2-class model, bit for bit."""
+
+    def __init__(self, ch=48, head=64, layers=2, deep=False):
+        super().__init__()
+        self.trunk = FireDoorNet(num_classes=2)
+        self.window = WindowBranch(ch, head, layers, deep=deep)
+        self.export_mode = False
+
+    def forward(self, x):
+        f8, f16, f32 = self.trunk.backbone(x)
+        hf, zf, of = self.trunk.neck_head(f8, f16, f32)
+        hw, zw, ow = self.window(f8, f16, f32)
+        heat = torch.cat([hf, hw], 1)
+        if self.export_mode:
+            heat = torch.sigmoid(heat)
+        return heat, F.relu(zf), torch.sigmoid(of), F.relu(zw), torch.sigmoid(ow)
+
+
+def build_model(sd=None):
+    """FireDoorNet (2-class) or FireDoorWindowNet from a state dict (keys 'trunk.' = the window model)."""
+    if sd is not None and any(k.startswith('trunk.') for k in sd):
+        m = FireDoorWindowNet(*window_config(sd))
+    elif sd is not None:
+        m = FireDoorNet(num_classes=sd['heat.weight'].shape[0])
+    else:
+        m = FireDoorWindowNet()
+    if sd is not None:
+        m.load_state_dict(sd)
+    return m
+
+
 # ---------------------------------------------------------------- BN folding
 def _fold(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
     w = conv.weight.detach()
@@ -210,7 +339,7 @@ def _fold(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> nn.Conv2d:
     return fused
 
 
-def fold_model(model: FireDoorNet) -> FireDoorNet:
+def fold_model(model):
     m = copy.deepcopy(model).eval()
 
     def walk(mod):
@@ -220,11 +349,14 @@ def fold_model(model: FireDoorNet) -> FireDoorNet:
             else:
                 walk(child)
     walk(m)
-    s = float(m.wh_scale)
-    m.wh.weight.data *= s
-    m.wh.bias.data *= s
-    m.wh_scale.fill_(1.0)
+    for sub in ([m.trunk, m.window] if isinstance(m, FireDoorWindowNet) else [m]):
+        s = float(sub.wh_scale)
+        sub.wh.weight.data *= s
+        sub.wh.bias.data *= s
+        sub.wh_scale.fill_(1.0)
     m.export_mode = True
+    if isinstance(m, FireDoorWindowNet):
+        m.trunk.export_mode = True
     return m
 
 

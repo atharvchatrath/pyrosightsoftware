@@ -1,6 +1,9 @@
 """Train FireDoorNet on CPU (2 threads).
 
 python3 train.py --out runs/main --epochs 14 --epoch-len 4000
+(The window class is trained by train_window.py on the frozen fire/door model; train.py with
+NUM_CLASSES = 3, --init and --teacher fine-tunes the whole network instead: tried on 2026-10-07,
+window AP stayed under 0.1 in the time available, see MODEL.md.)
 """
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ import math
 import os
 import time
 
-os.environ.setdefault('OMP_NUM_THREADS', '2')
+os.environ.setdefault('OMP_NUM_THREADS', os.environ.get('FD_THREADS', '2'))
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -19,7 +22,7 @@ from torch.utils.data import DataLoader
 
 from data import TrainSet, load_index
 from evaluate import ap_and_pr, decode_all, fp_per_image, image_present_rate, infer_items
-from model import FireDoorNet, load_keras_mnv2
+from model import NUM_CLASSES, FireDoorNet, load_expanding, load_keras_mnv2
 
 R = os.path.dirname(os.path.abspath(__file__))
 KERAS = os.path.join(R, '..', 'assets', 'keras', 'mobilenet_v2_0.5_224_no_top.h5')
@@ -33,6 +36,17 @@ def focal_loss(logits, target, mask):
     pos_l = torch.log(p) * (1 - p) ** 2 * pos
     neg_l = torch.log(1 - p) * p ** 2 * (1 - target) ** 4 * neg
     return -(pos_l.sum() + neg_l.sum()), pos.sum()
+
+
+def distill_loss(heat_l, teacher_l, n_cls):
+    """Learning without forgetting: keep the first n_cls heat channels (fire, door) close to the teacher's
+    (the shipped 2-class model) on every pixel: KL(teacher || student) of the per-pixel Bernoulli,
+    summed over pixels and those channels, averaged over the batch."""
+    s = heat_l[:, :n_cls].float()
+    t = teacher_l[:, :n_cls].float()
+    pt = torch.sigmoid(t)
+    kl = F.binary_cross_entropy_with_logits(s, pt, reduction='none') - F.binary_cross_entropy_with_logits(t, pt, reduction='none')
+    return kl.sum() / s.shape[0]
 
 
 def compute_loss(out, batch, w_wh=1.0, w_off=1.0, w_mil=0.3):
@@ -78,16 +92,34 @@ def validate(model, thr=0.4):
         VAL_CACHE['door'] = load_index('val', ['door'])
         VAL_CACHE['neg'] = load_index('val', ['neg'])
         VAL_CACHE['weak'] = load_index('val', ['fire_weak'])
+        VAL_CACHE['window'] = load_index('val', ['window'])
+        VAL_CACHE['wneg'] = load_index('val', ['wneg'])
     res = {}
-    dets = {k: decode_all(infer_items(model, v)) for k, v in VAL_CACHE.items()}
+    dets = {k: decode_all(infer_items(model, v)) if v else [] for k, v in VAL_CACHE.items()}
     f = ap_and_pr(dets['fire'], VAL_CACHE['fire'], 0, thr)
     d = ap_and_pr(dets['door'] + dets['neg'], VAL_CACHE['door'] + VAL_CACHE['neg'], 1, thr)
     res['fire_ap'], res['fire_R'], res['fire_P'] = f['ap'], f['recall'], f['precision']
     res['door_ap'], res['door_R'], res['door_P'] = d['ap'], d['recall'], d['precision']
     res['neg_fire_fp_img'], res['neg_fire_img_rate'] = fp_per_image(dets['neg'] + dets['door'], 'fire', thr)
     res['weak_fire_present'] = image_present_rate(dets['weak'], 'fire', thr)
+    # window: images where "Window" was verified (boxes exhaustive, or verified absent)
+    wd, wi = [], []
+    for k in ('door', 'neg', 'window', 'wneg'):
+        for dd, it in zip(dets[k], VAL_CACHE[k]):
+            if it['sup'][2]:
+                wd.append(dd); wi.append(it)
+    if wi and NUM_CLASSES > 2:
+        w = ap_and_pr(wd, wi, 2, thr)
+        res['window_ap'], res['window_R'], res['window_P'] = w['ap'], w['recall'], w['precision']
+        res['window_val_images'] = len(wi)
+        res['wneg_fire_img_rate'] = fp_per_image(dets['wneg'] + dets['window'], 'fire', 0.5)[1]
+        nw = [dd for dd, it in zip(wd, wi) if not any(int(b[0]) == 2 for b in it['boxes'])]
+        res['nowindow_window_fp_img'] = fp_per_image(nw, 'window', 0.5)[0]
+    else:
+        res['window_ap'] = 0.0
     # selection score: APs, minus a penalty for fire false alarms on hard negatives
-    res['score'] = 0.5 * f['ap'] + 0.3 * d['ap'] + 0.2 * res['weak_fire_present'] - 0.5 * res['neg_fire_img_rate']
+    res['score'] = 0.5 * f['ap'] + 0.3 * d['ap'] + 0.2 * res['weak_fire_present'] - 0.5 * res['neg_fire_img_rate'] \
+        + 0.3 * res['window_ap']
     return res
 
 
@@ -106,17 +138,34 @@ def main():
     ap.add_argument('--mix', default=None, help='JSON dict kind -> sampling weight')
     ap.add_argument('--w-mil', type=float, default=0.3)
     ap.add_argument('--mosaic', type=float, default=0.25)
+    ap.add_argument('--threads', type=int, default=int(os.environ.get('FD_THREADS', '2')))
+    ap.add_argument('--warm', type=int, default=None, help='warm-up iterations (default 300, or 50 with --init)')
+    ap.add_argument('--ema', type=float, default=0.998, help='EMA decay with --init')
+    ap.add_argument('--teacher', default=None, help='checkpoint whose fire/door heat the model is kept close to (distillation)')
+    ap.add_argument('--w-kd', type=float, default=0.5)
     args = ap.parse_args()
-    torch.set_num_threads(2)
+    torch.set_num_threads(args.threads)
     torch.manual_seed(0)
     os.makedirs(args.out, exist_ok=True)
 
     model = FireDoorNet()
     if args.init:
-        model.load_state_dict(torch.load(args.init, map_location='cpu'))
+        grown = load_expanding(model, args.init)
+        if grown:
+            print('new class channels initialised fresh in', grown, flush=True)
     elif not args.random_init:
         load_keras_mnv2(model.backbone, KERAS)
     frozen = freeze_early(model, args.freeze) if args.freeze else []
+    teacher, kd_cls = None, 0
+    if args.teacher:
+        tsd = torch.load(args.teacher, map_location='cpu')
+        kd_cls = tsd['heat.weight'].shape[0]
+        teacher = FireDoorNet(num_classes=kd_cls)
+        teacher.load_state_dict(tsd)
+        teacher = teacher.eval().to(memory_format=torch.channels_last)
+        for p in teacher.parameters():
+            p.requires_grad_(False)
+        print('distilling the first %d heat channels from %s (w %.2f)' % (kd_cls, args.teacher, args.w_kd), flush=True)
     model = model.to(memory_format=torch.channels_last)
     ema = copy.deepcopy(model).eval()
     for p in ema.parameters():
@@ -134,7 +183,7 @@ def main():
     iters_per_epoch = len(dl)
     t0 = time.time()
     total = args.epochs * iters_per_epoch
-    warm = min(300, total // 10) if not args.init else 50
+    warm = args.warm if args.warm is not None else (min(300, total // 10) if not args.init else 50)
 
     def progress(it):
         # whichever is further along: iterations or the wall-clock budget
@@ -158,11 +207,17 @@ def main():
             x = batch[0].contiguous(memory_format=torch.channels_last)
             out = model(x)
             loss, parts = compute_loss(out, batch, w_mil=args.w_mil)
+            if teacher is not None:
+                with torch.no_grad():
+                    t_heat = teacher(x)[0]
+                l_kd = distill_loss(out[0], t_heat, kd_cls)
+                loss = loss + args.w_kd * l_kd
+                parts['kd'] = l_kd.item()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
             opt.step()
-            d = min(0.999, (1 + it) / (10 + it)) if not args.init else 0.998
+            d = min(0.999, (1 + it) / (10 + it)) if not args.init else args.ema
             with torch.no_grad():
                 for pe, pm in zip(ema.state_dict().values(), model.state_dict().values()):
                     if pe.dtype.is_floating_point:
@@ -184,6 +239,7 @@ def main():
         print(json.dumps(res), flush=True)
         log.write(json.dumps(res) + '\n'); log.flush()
         torch.save(ema.state_dict(), os.path.join(args.out, 'last.pt'))
+        torch.save(ema.state_dict(), os.path.join(args.out, 'ep%02d.pt' % ep))
         if res['score'] > best:
             best = res['score']
             torch.save(ema.state_dict(), os.path.join(args.out, 'best.pt'))

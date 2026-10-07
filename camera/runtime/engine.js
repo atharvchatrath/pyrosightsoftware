@@ -1,5 +1,5 @@
 /*
- * PyroSight Camera detection engine (engine.js): runs the three detectors (person, face, fire/door)
+ * PyroSight Camera detection engine (engine.js): runs the three detectors (person, face, fire/door/window)
  * and hands back plain box lists. Plain script, no bundler; defines globalThis.PSEngine. Needs TF.js,
  * oplist.js (PSOpList), people.js (PSPeople), the embedded models (PS_PEOPLE_ASSETS,
  * PS_OPLIST_ASSETS.firedoor) and firedoor/decode.js (FireDoorDecode) + PS_FIREDOOR_META.
@@ -159,9 +159,12 @@
       let out;
       try { out = yieldFn ? await model.runAsync(x, { yieldFn }) : model.run(x); } finally { x.dispose(); }
       try {
-        const [heat, wh, off] = await Promise.all([out.heat.data(), out.wh.data(), out.off.data()]);
+        // the window model (FireDoorWindowNet) adds wh_w / off_w: the size and offset of WINDOW boxes
+        const [heat, wh, off, whW, offW] = await Promise.all([out.heat.data(), out.wh.data(), out.off.data(),
+          out.wh_w ? out.wh_w.data() : null, out.off_w ? out.off_w.data() : null]);
         const o = Object.assign({ layout, inW, inH, gridW: inW / 8, gridH: inH / 8 }, meta.decode || {});
         o.thresholds = Object.assign({}, o.thresholds || {}, thresholds);
+        if (whW && offW) { o.windowWh = whW; o.windowOff = offW; }
         return dec.decode(heat, wh, off, o);
       } finally {
         tf.dispose(Object.values(out));
@@ -208,7 +211,7 @@
             const lift = zoom.on - (hy ? hy.on : fireMin);
             const crop = tf.slice(px, [y0, x0, 0], [ch, cw, 3]);
             try {
-              zd = (await pass(crop, { fire: fireMin + lift, door: 2 })).filter((d) => d.cls === 'fire').map((d) => Object.assign(d, {
+              zd = (await pass(crop, { fire: fireMin + lift, door: 2, window: 2 })).filter((d) => d.cls === 'fire').map((d) => Object.assign(d, {
                 x: (x0 + d.x * cw) / W, y: (y0 + d.y * ch) / H, w: d.w * cw / W, h: d.h * ch / H,
                 rawScore: d.score, score: d.score - lift, zoom: true }));
             } finally { crop.dispose(); }

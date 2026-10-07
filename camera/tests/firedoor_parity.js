@@ -3,7 +3,7 @@
 //   node tests/firedoor_parity.js PREFIX[,PREFIX2...] [--ref tests/out/firedoor_ref] [--json out.json]
 // PREFIX.oplist.json + PREFIX.weights.bin from runtime/export_oplist.py (--nhwc-outputs or not).
 // Compares raw heat/wh/off (max abs error) and the decoded boxes (firedoor/decode.js,
-// default thresholds fire 0.50 / door 0.35 and the hysteresis floor 0.35).
+// default thresholds fire 0.50 / door 0.35 / window 0.50, and the hysteresis floor 0.35 for every class).
 const path = require('path');
 const fs = require('fs');
 const CAMERA = path.join(__dirname, '..');
@@ -61,21 +61,24 @@ async function main() {
       r.ms.push(Date.now() - t0);
       tf.dispose(Object.values(out)); x.dispose();
       const pc = { case: c, label: Buffer.from(Array.from(ref.arrays['label/' + c].data)).toString().trim() };
-      for (const k of ['heat', 'wh', 'off']) {
+      for (const k of Object.keys(vals)) {
+        if (!ref.arrays['out/' + c + '/' + k]) continue;
         const a = vals[k], b = ref.arrays['out/' + c + '/' + k].data;
         let m = 0;
         for (let i = 0; i < a.length; i++) { const d = Math.abs(a[i] - b[i]); if (!(d <= m)) m = d; }
         pc[k] = m; r.maxAbs[k] = Math.max(r.maxAbs[k] || 0, m);
       }
-      for (const [key, opts] of [['default', {}], ['floor035', { thresholds: { fire: 0.35, door: 0.35 } }]]) {
-        const rb = dec.decode(ref.arrays['out/' + c + '/heat'].data, ref.arrays['out/' + c + '/wh'].data, ref.arrays['out/' + c + '/off'].data, opts);
-        const gb = dec.decode(vals.heat, vals.wh, vals.off, opts);
+      for (const [key, opts] of [['default', {}], ['floor035', { thresholds: { fire: 0.35, door: 0.35, window: 0.35 } }]]) {
+        const R = (k) => ref.arrays['out/' + c + '/' + k] && ref.arrays['out/' + c + '/' + k].data;
+        const rb = dec.decode(R('heat'), R('wh'), R('off'), Object.assign({ windowWh: R('wh_w'), windowOff: R('off_w') }, opts));
+        const gb = dec.decode(vals.heat, vals.wh, vals.off, Object.assign({ windowWh: vals.wh_w || null, windowOff: vals.off_w || null }, opts));
         const cmp = compareBoxes(rb, gb);
         const B = box[key];
         B.ref += cmp.ref; B.got += cmp.got; B.matched += cmp.matched;
         if (cmp.minIoU != null) B.minIoU = Math.min(B.minIoU, cmp.minIoU);
         B.maxDScore = Math.max(B.maxDScore, cmp.maxDScore);
         if (key === 'default') pc.boxes = cmp.ref + '/' + cmp.got + ' matched ' + cmp.matched;
+        for (const d of rb) { const k2 = key + '_' + d.cls; B.byClass = B.byClass || {}; B.byClass[d.cls] = (B.byClass[d.cls] || 0) + 1; }
       }
       r.perCase.push(pc);
     }

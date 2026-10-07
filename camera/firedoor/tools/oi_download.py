@@ -1,10 +1,17 @@
-"""Download the selected Open Images JPEGs (resized to max side 640) into data/oi/img/."""
+"""Download the selected Open Images JPEGs (resized to max side 640) into data/oi/img/.
+
+python3 tools/oi_download.py                                  # data/oi/selection.json
+python3 tools/oi_download.py data/oi/selection_window.json    # the window additions (its "new" list)
+python3 tools/oi_download.py data/oi/selection_window_big.json  # the big-window training photos (its "new" list)
+"""
 import io, json, os, sys, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 D = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'oi')
 OUT = os.path.join(D, 'img'); os.makedirs(OUT, exist_ok=True)
-sel = json.load(open(os.path.join(D, 'selection.json')))
+sel = json.load(open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(D, 'selection.json')))
+if isinstance(sel, dict):
+    sel = sel['new']
 
 def get(v):
     p = os.path.join(OUT, v['id'] + '.jpg')

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Key screenshots of the integrated page, one fake-camera clip per subject (a single image that
 // drifts a few pixels, so the boxes on screen always belong to the picture on screen).
-//   python3 tests/make_e2e_clips.py --clips-dir DIR --only still_face,still_group,still_fire,still_door
+//   python3 tests/make_e2e_clips.py --clips-dir DIR --only still_face,still_group,still_fire,still_door,still_window
 //   taskset -c 2,3 node tests/e2e_shots.js
-// Writes camera/shots/key_*.png and tests/out/e2e_shots.json (what was boxed in each shot).
+// Writes camera/shots/key_*.png, camera/shots/window_key_*.png and tests/out/e2e_shots.json (what was boxed in each shot).
+// ONLY=window (or face,group,fire,door) runs a subset.
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -42,11 +43,47 @@ async function waitFor(page, pred, timeout) {
   return last;
 }
 const snap = (page, file) => page.locator('#screen').screenshot({ path: path.join(SHOTS, file) });
-const brief = (d) => d && { people: d.people.map((b) => b.label + '(' + b.from + ')'), fire: d.fire.map((b) => b.score), door: d.door.map((b) => b.score) };
+const brief = (d) => d && { people: d.people.map((b) => b.label + '(' + b.from + ')'), fire: d.fire.map((b) => b.score), door: d.door.map((b) => b.score),
+  window: (d.window || []).map((b) => b.score) };
+const ONLY = process.env.ONLY ? process.env.ONLY.split(',') : null;
+const want = (k) => !ONLY || ONLY.includes(k);
+async function tapBox(page, b) {
+  const p = await page.evaluate(([nx, ny]) => {
+    const st = window.PSCamera.state, c = document.getElementById('view'), r = c.getBoundingClientRect(), fit = st.fit;
+    const x = st.src.mirror ? 1 - nx : nx;
+    return { x: r.left + (fit.x + x * fit.w) * r.width / c.width, y: r.top + (fit.y + ny * fit.h) * r.height / c.height };
+  }, [b.x + b.w / 2, b.y + b.h / 2]);
+  await page.mouse.click(p.x, p.y);
+}
 
 (async () => {
-  const out = {};
-  {  // face: white box with distance; then Mark way out (green EXIT); then eyepiece view
+  let out = {};
+  try { out = JSON.parse(fs.readFileSync(path.join(__dirname, 'out', 'e2e_shots.json'))); } catch (e) { out = {}; }
+  if (want('window') && MAN.clips.still_window) {  // window: green WINDOW, tap it -> green EXIT on the window; eyepiece (Ironbow)
+    const { browser, page, ext } = await open('still_window');
+    const d = await waitFor(page, (x) => (x.window || []).length > 0);
+    await snap(page, 'window_key_green.png');
+    let mark = null;
+    if (d && (d.window || []).length) {
+      await tapBox(page, d.window[0]);
+      await sleep(2500);
+      await snap(page, 'window_key_exit_marked.png');
+      mark = await page.evaluate(() => { const m = window.PSCamera.state.mark; return { mark: m && { door: m.door, window: m.window, at: m.at }, exit: window.PSCamera.exitInfo(),
+        status: document.getElementById('s-exit').textContent, log: window.PSCamera.state.log.slice(0, 3).map((l) => l.text) }; });
+      mark.exit = mark.exit && { inView: mark.exit.inView, trusted: mark.exit.trusted };
+    }
+    await page.click('#eyepiece');
+    await sleep(1500);
+    await snap(page, 'window_key_eyepiece_ironbow.png');
+    const pal = await page.evaluate(() => ({ palette: window.PSCamera.state.palette, button: document.getElementById('palette').textContent }));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await sleep(1200);
+    await page.screenshot({ path: path.join(SHOTS, 'window_page_390.png'), fullPage: false });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    out.window = { boxes: brief(d), mark, palette: pal, overflow390: overflow, external: ext.length };
+    await browser.close();
+  }
+  if (want('face')) {  // face: white box with distance; then Mark way out (green EXIT); then eyepiece view
     const { browser, page, ext } = await open('still_face');
     const d = await waitFor(page, (x) => x.people.length > 0);
     await snap(page, 'key_face_white.png');
@@ -60,21 +97,21 @@ const brief = (d) => d && { people: d.people.map((b) => b.label + '(' + b.from +
     out.face = { boxes: brief(d), exit: ex && { inView: ex.inView, trusted: ex.trusted }, external: ext.length };
     await browser.close();
   }
-  {  // group: several white boxes
+  if (want('group')) {  // group: several white boxes
     const { browser, page, ext } = await open('still_group');
     const d = await waitFor(page, (x) => x.people.length >= 2);
     await snap(page, 'key_group_white.png');
     out.group = { boxes: brief(d), external: ext.length };
     await browser.close();
   }
-  {  // fire (FireNET test image with a cook): purple FIRE (+ white if the person is found)
+  if (want('fire')) {  // fire (FireNET test image with a cook): purple FIRE (+ white if the person is found)
     const { browser, page, ext } = await open('still_fire');
     const d = await waitFor(page, (x) => x.fire.length > 0 && x.people.length > 0, 90000);
     await snap(page, 'key_fire_purple.png');
     out.fire = { boxes: brief(d), external: ext.length };
     await browser.close();
   }
-  {  // door: green DOOR, then tap it -> green EXIT on the door
+  if (want('door')) {  // door: green DOOR, then tap it -> green EXIT on the door
     const { browser, page, ext } = await open('still_door');
     const d = await waitFor(page, (x) => x.door.length > 0);
     await snap(page, 'key_door_green.png');

@@ -16,8 +16,10 @@ Clips (ground truth boxes normalised to the 640x480 frame):
   nopeople  8 photos without people (Open Images, CC BY 2.0)         nothing
   fire     12 FireNET test images (MIT)                              fire boxes
   doors    10 door photos (Open Images, CC BY 2.0)                   door boxes
+  windows  10 indoor window photos (Open Images test split, CC BY 2.0; testdata/window, made by
+           firedoor/tools/make_window_testdata.py)                   window (+ door) boxes
   lights   12 hard negatives: lamps, bulbs, sunsets, oranges ... (Open Images, CC BY 2.0), no fire
-  still_face, still_group, still_fire, still_door   one image each, for the key screenshots
+  still_face, still_group, still_fire, still_door, still_window   one image each, for the key screenshots
   firevideo  testdata/fire/clips/fire_road_burning (FireNET repo video1, CGTN/CCTV footage:
              LOCAL TESTING ONLY, not published), fire in every frame, no boxes
 """
@@ -143,15 +145,18 @@ def main():
     fire = json.load(open(os.path.join(TD, 'fire', 'manifest.json')))['images']
     door = json.load(open(os.path.join(TD, 'door', 'manifest.json')))['images']
     neg = json.load(open(os.path.join(TD, 'negatives', 'manifest.json')))['images']
+    wpath = os.path.join(TD, 'window', 'manifest.json')
+    window = json.load(open(wpath))['images'] if os.path.exists(wpath) else []
 
     def pitem(it):
         return {'path': os.path.join(TD, 'people', it['file']), 'credit': '%s, %s' % (it.get('author'), it.get('licence')),
                 'gt': {'person': it['persons'], 'face': it['faces']}}
 
-    def box_item(it, base, cls):
+    def box_item(it, base, cls, also=()):
         return {'path': os.path.join(TD, base, it['file']),
                 'credit': '%s, %s' % (it.get('author', it.get('source')), it.get('license', 'MIT (FireNET)')),
-                'gt': {cls: [[b['x'], b['y'], b['w'], b['h']] for b in it['boxes'] if b['cls'] == cls]}}
+                'gt': {c: [[b['x'], b['y'], b['w'], b['h']] for b in it['boxes'] if b['cls'] == c]
+                       for c in (cls,) + tuple(also)}}
 
     closeup = [i for i in people if i['group'] == 'closeup' and i.get('rotation') in ('', '0.0', None)]
     # d8d6fdd2bdc2e8e3: excluded by hand (a nude figure on a bike; not suitable for screenshots)
@@ -175,8 +180,20 @@ def main():
         'doors': [box_item(i, 'door', 'door') for i in door[::6][:10]],
         'lights': lights,
     }
+    if window:
+        clips['windows'] = [box_item(i, 'window', 'window', ('door',)) for i in window[::4][:10]]
+        # key screenshot: the first window photo (manifest order) with exactly one window, 8-40 % of the picture
+        # and wholly in view (not cut by the picture's edge): someone in a room, facing a window
+        def whole(b, e=0.02):
+            return b['x'] >= e and b['y'] >= e and b['x'] + b['w'] <= 1 - e and b['y'] + b['h'] <= 1 - e
+        one = [i for i in window if sum(b['cls'] == 'window' for b in i['boxes']) == 1 and
+               all(b['cls'] != 'window' or (0.08 <= b['w'] * b['h'] <= 0.4 and whole(b)) for b in i['boxes'])]
+        clips['still_window'] = [box_item(one[0], 'window', 'window', ('door',))]
     man_path = os.path.join(HERE, 'out', 'e2e_clips.json')
     old = json.load(open(man_path)) if only and os.path.exists(man_path) else {'clips': {}}
+    for v in old['clips'].values():          # clips kept from an earlier run stay where they were written
+        if old.get('clips_dir'):
+            v.setdefault('dir', old['clips_dir'])
     # single-image clips for the key screenshots (tests/e2e_shots.js): no cuts, so boxes, tracking and
     # the picture on screen always belong together
     byid = {os.path.basename(i['file']).split('.')[0].replace('oi_', ''): i for i in people + door + fire}

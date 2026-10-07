@@ -1,0 +1,24 @@
+{
+ "image": "window.jpg",
+ "image_size": [
+  480,
+  640
+ ],
+ "classes": 3,
+ "thresholds": {
+  "fire": 0.5,
+  "door": 0.35,
+  "window": 0.36
+ },
+ "resize": "cv2.resize to 320x256 (INTER_AREA when shrinking), RGB, x/127.5-1, NCHW",
+ "detections_default_thresholds": [
+  {
+   "cls": "window",
+   "score": 0.4895050525665283,
+   "x": 0.1934710457921028,
+   "y": 0.2091612247750163,
+   "w": 0.3412219285964966,
+   "h": 0.3481109142303467
+  }
+ ]
+}

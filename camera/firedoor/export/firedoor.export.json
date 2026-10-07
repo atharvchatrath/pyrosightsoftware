@@ -1,19 +1,35 @@
 {
  "onnx": "export/firedoor.onnx",
+ "checkpoint": "runs/window_deep/best.pt",
  "opset": 13,
  "ops": {
-  "Conv": 63,
-  "Clip": 34,
-  "Add": 12,
-  "Relu": 10,
-  "Resize": 2,
-  "Sigmoid": 2
+  "Identity": 1,
+  "Conv": 87,
+  "Clip": 42,
+  "Add": 16,
+  "Relu": 20,
+  "Resize": 4,
+  "Mul": 2,
+  "Concat": 1,
+  "Sigmoid": 3
  },
- "initializer_params": 501722,
- "fp32_bytes": 2045975,
- "fp16_weight_bytes": 1003444,
- "conv_macs": 157168640,
+ "initializer_params": 856072,
+ "fp32_bytes": 3478581,
+ "fp16_weight_bytes": 1712144,
+ "conv_macs": 203161600,
  "resize_attrs": [
+  {
+   "coordinate_transformation_mode": "asymmetric",
+   "cubic_coeff_a": -0.75,
+   "mode": "nearest",
+   "nearest_mode": "floor"
+  },
+  {
+   "coordinate_transformation_mode": "asymmetric",
+   "cubic_coeff_a": -0.75,
+   "mode": "nearest",
+   "nearest_mode": "floor"
+  },
   {
    "coordinate_transformation_mode": "asymmetric",
    "cubic_coeff_a": -0.75,
@@ -37,6 +53,16 @@
    "/fuse16/fuse16.1/fuse16.1.1/Relu_output_0",
    "",
    "/up_1/Constant_output_0"
+  ],
+  [
+   "/window/lat32/lat32.1/Relu_output_0",
+   "",
+   "/window/up/Constant_output_0"
+  ],
+  [
+   "/window/fuse16/fuse16.1/fuse16.1.1/Relu_output_0",
+   "",
+   "/window/up_1/Constant_output_0"
   ]
  ],
  "clip_min_max_values": [
@@ -46,10 +72,14 @@
  "parity_max_abs_diff": {
   "heat_torch_vs_folded": 2.0563602447509766e-06,
   "heat_torch_vs_onnx": 1.6689300537109375e-06,
-  "wh_torch_vs_folded": 0.0019989013671875,
+  "wh_torch_vs_folded": 0.002166748046875,
   "wh_torch_vs_onnx": 0.00200653076171875,
-  "off_torch_vs_folded": 4.827976226806641e-06,
-  "off_torch_vs_onnx": 4.559755325317383e-06
+  "off_torch_vs_folded": 4.857778549194336e-06,
+  "off_torch_vs_onnx": 4.559755325317383e-06,
+  "wh_w_torch_vs_folded": 0.0024871826171875,
+  "wh_w_torch_vs_onnx": 0.00215911865234375,
+  "off_w_torch_vs_folded": 4.172325134277344e-06,
+  "off_w_torch_vs_onnx": 3.933906555175781e-06
  },
  "inputs": [
   [
@@ -67,7 +97,7 @@
    "heat",
    [
     1,
-    2,
+    3,
     32,
     40
    ]
@@ -83,6 +113,24 @@
   ],
   [
    "off",
+   [
+    1,
+    2,
+    32,
+    40
+   ]
+  ],
+  [
+   "wh_w",
+   [
+    1,
+    2,
+    32,
+    40
+   ]
+  ],
+  [
+   "off_w",
    [
     1,
     2,
