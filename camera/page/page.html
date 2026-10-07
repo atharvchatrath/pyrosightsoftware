@@ -185,6 +185,7 @@ ol.log li.empty { color: var(--muted); }
           <div class="row">
             <button id="voice" aria-pressed="false">Voice: off</button>
             <button id="eyepiece" aria-pressed="false">Eyepiece view: off</button>
+            <button id="palette" hidden>Palette: White-hot</button>
           </div>
           <p class="hint" id="hint">Mark way out remembers where the camera points now; or tap the picture to mark that spot.</p>
         </div>
@@ -213,7 +214,7 @@ ol.log li.empty { color: var(--muted); }
       <section class="card about" aria-labelledby="ab-h">
         <div class="card-head"><h2 id="ab-h">About this view</h2></div>
         <p class="privacy">Video never leaves your device. Everything runs inside this page; nothing is uploaded, recorded or stored.</p>
-        <p>This uses an ordinary camera, which sees light. It cannot see through smoke or in the dark. The real PyroSight eyepiece uses a thermal camera that sees heat. Eyepiece view only imitates its grey picture; it is not thermal imaging.</p>
+        <p>This uses an ordinary camera, which sees light. It cannot see through smoke or in the dark. The real PyroSight eyepiece uses a thermal camera that sees heat. Eyepiece view imitates its picture &mdash; same low resolution, and the device&rsquo;s own three palettes (white-hot, ironbow, amber night) from <code>ps_display.c</code> &mdash; but it is colouring <strong>brightness, not temperature</strong>. A white shirt comes out &ldquo;hot&rdquo; and a cold radiator comes out dark. It is not thermal imaging and must not be read as one.</p>
         <p>Mark way out remembers a direction and follows it as you turn the camera, from how the picture moves and from the motion sensor on phones that report one. It does not know where you are or how far you have walked, so it is not navigation through a building.</p>
         <p>Distances are rough estimates from the size of a face or body and an assumed camera field of view of 65°.</p>
         <p>The fire and door detector is small and was trained on a few hundred public fire photos and a few thousand door photos. It misses many small or distant flames (a candle or lighter is found more often near the middle of the picture), can box a bright bulb, lamp, LED or low sun as fire, and finds only clear, face-on doors.</p>

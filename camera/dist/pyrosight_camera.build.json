@@ -28,9 +28,9 @@
  "pages": [
   {
    "file": "dist/pyrosight_camera.html",
-   "bytes": 8229516,
-   "mb": 8.23,
-   "sha256": "8e6fdfbcf80679effb47f65c6bce594a2f5a58559cee01968971c22f2d888439",
+   "bytes": 8233151,
+   "mb": 8.233,
+   "sha256": "c2cc501375cc28c9ad2fe5a7ee11f54ee00228aa537390a055e93356923cbca7",
    "title_ok": true,
    "parts": [
     "ps-app",
@@ -65,9 +65,9 @@
   },
   {
    "file": "dist/pyrosight_camera.fragment.html",
-   "bytes": 8229383,
-   "mb": 8.229,
-   "sha256": "56f4c33a29aef0bb174a354cc9c98e36162cbbd7783e34aec9b5f2e91e30f5c8",
+   "bytes": 8233018,
+   "mb": 8.233,
+   "sha256": "552fc86d10f33bb7c8be3b1bc68d86320cc04742a1bb71ddded7eaf7daa1f96a",
    "title_ok": true,
    "parts": [
     "ps-app",
@@ -103,20 +103,20 @@
  ],
  "page_build": {
   "files": {
-   "pyrosight_camera.html": 8229516,
-   "pyrosight_camera.fragment.html": 8229383
+   "pyrosight_camera.html": 8233151,
+   "pyrosight_camera.fragment.html": 8233018
   },
   "parts": {
-   "SHELL": 15257,
+   "SHELL": 15693,
    "TFJS": 1469867,
    "OPLIST": 14361,
    "PEOPLE": 20430,
    "PEOPLE_ASSETS": 5156727,
    "FIREDOOR": 1431558,
    "MOTION": 31414,
-   "APP": 76847
+   "APP": 79673
   },
   "firedoor_included": true,
-  "firedoor_source": "/home/claude/pyrosight/camera/build/firedoor/firedoor"
+  "firedoor_source": "/Users/aarushpendoti/Downloads/pyrosightsoftware-main/camera/build/firedoor/firedoor"
  }
 }
