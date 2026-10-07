@@ -75,14 +75,21 @@ The thermal fire and person detector was trained only on synthetic images.
 
 ## 4. Camera page (browser demo, no hardware needed)
 
-`camera/` is the webcam version: people in white, fire in purple, way out in
-green, plus a navigation demo. See `camera/README.md`.
+`camera/` is the webcam version: people in white, fire in purple, way out
+(doors, windows, a marked exit) in green, plus a navigation demo. See
+`camera/README.md`. The simulator page (`sim/web/`) embeds it as "Try it on
+your own camera".
 
 - [ ] Test it on real phones (iPhone and Android) and real webcams. So far it
       has only run in a headless Chromium browser with recorded clips.
 - [ ] Doors are weak: only clear, face-on doors get boxed. Retrain FireDoorNet
       (`camera/firedoor/`) with more door images and with wardrobes, windows
       and fridges as hard negatives.
+- [ ] Windows are weak too: a window is boxed in 17 of 40 held-out room photos.
+      Open Images has few indoor windows; photos of rooms from the inside
+      (ADE20K or SUN RGB-D, or your own) would help most. Measure with the
+      held-out room photos that `camera/firedoor/tools/make_window_testdata.py`
+      puts in `camera/testdata/window` (see `firedoor/MODEL.md`, "Window class").
 - [ ] Fire: small flames (a lighter at arm's length) are mostly missed, and
       sunsets and bright bulbs are sometimes boxed as fire.
 - [ ] Phone navigation: test "Start here" with real walking (step counting and

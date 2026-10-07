@@ -1,0 +1,2 @@
+# Test results and screenshots (regenerable: node tests/section_test.js, node tests/load_time.js)
+tests/out/

@@ -20,6 +20,8 @@
   --true-path: #ff8a3d;
   --est-path: #38c6f4;
   --hose: #e8c547;
+  --notice-bg: #fff6e8;
+  --notice-border: #f0d4a8;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -31,6 +33,8 @@
     --border: #2a313b;
     --chip: #1f252d;
     --screen-line: #252d38;
+    --notice-bg: #2a2216;
+    --notice-border: #4d3d22;
     color-scheme: dark;
   }
 }
@@ -42,6 +46,8 @@
   --border: #2a313b;
   --chip: #1f252d;
   --screen-line: #252d38;
+  --notice-bg: #2a2216;
+  --notice-border: #4d3d22;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -119,12 +125,35 @@ ol.log li.empty { color: var(--muted); }
   .stats { grid-template-columns: minmax(0, 1fr); }
   .row > label.lbl { min-width: 100%; }
 }
+/* "Try it on your own camera": the PyroSight Camera page, opened on demand in a frame */
+.camjump { margin-top: 10px; min-height: 44px; padding: 8px 14px; border-radius: 999px; font-weight: 600; }
+.camsec { margin-top: 20px; scroll-margin-top: 8px; }
+.camsec [hidden] { display: none !important; }
+.camsec-h { font-size: 19px; line-height: 1.25; text-transform: none; letter-spacing: -0.01em; color: var(--fg); font-weight: 650; margin: 0 0 4px; }
+.camsec-lead { margin: 0; max-width: 760px; }
+.camsec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.camsec-actions button { min-height: 44px; }
+.camsec-actions .camsec-big { min-height: 52px; padding: 10px 22px; font-size: 17px; }
+.camsec-note { margin: 10px 0 0; }
+.camsec-help { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: var(--notice-bg); border: 1px solid var(--notice-border); }
+.camsec-help p { margin: 0 0 6px; }
+.camsec-help .t { font-weight: 650; }
+.camsec-help .camsec-actions { margin: 8px 0; }
+.camsec-frame { margin: 14px -14px -14px; }
+.camsec-frame:empty { display: none; }
+.camsec-frame iframe { display: block; box-sizing: content-box; width: 100%; height: 720px; border: 0; border-top: 1px solid var(--border); border-radius: 0 0 11px 11px; background: var(--bg); }
+@media (max-width: 600px) {
+  /* edge to edge on a phone: the camera page has its own 16 px margins */
+  .camsec { margin-left: -16px; margin-right: -16px; border-radius: 0; border-left: 0; border-right: 0; }
+  .camsec-frame iframe { border-radius: 0; }
+}
 </style>
 
 <div class="wrap">
   <header>
     <h1><span class="dot"></span>PyroSight simulator</h1>
     <p class="sub">The PyroSight device software on a simulated search in a smoke-filled building. A firefighter walks in, finds a casualty and a fire, then walks back out following only the arrow in the eyepiece. It is the same code that runs on the ESP32-P4, compiled for your browser.</p>
+    <!--@@CAMERA_BEGIN@@--><button class="camjump" id="cam-jump" type="button">Try it on your own camera ↓</button><!--@@CAMERA_END@@-->
   </header>
 
   <div class="grid">
@@ -173,7 +202,7 @@ ol.log li.empty { color: var(--muted); }
         </div>
         <div class="row">
           <button id="whereout" disabled>Ask “where’s the way out?”</button>
-          <button id="palette" disabled>Change colours</button>
+          <button id="palette" disabled>Colours: Ironbow</button>
           <button id="voice" aria-pressed="false">Voice: off</button>
         </div>
       </section>
@@ -218,12 +247,37 @@ ol.log li.empty { color: var(--muted); }
   </div>
 
   <p class="foot">Simulation only. The building, the smoke and the motion sensor are simulated. The AI model was trained on synthetic thermal images and has never seen a real fire, so treat its boxes as a demonstration of the pipeline, not of real-world accuracy. The green exit box is drawn where the device believes the doorway is, and only while its navigation estimate is trusted and the doorway is the next point on the way out.</p>
+  <!--@@CAMERA_BEGIN@@-->
+  <section class="card camsec" id="camera" aria-labelledby="camsec-h">
+    <h2 class="camsec-h" id="camsec-h">Try it on your own camera</h2>
+    <p class="camsec-lead">Point your phone or laptop camera at @@TARGETS@@ and the eyepiece boxes appear live on your own picture.</p>
+    <div class="legend" aria-label="Box colours on your camera">
+      <span class="chip"><i class="sw person"></i>Person</span>
+      <span class="chip"><i class="sw fire"></i>Fire</span>
+      <span class="chip"><i class="sw exit"></i>Way out (@@WAYOUT_CHIP@@)</span>
+    </div>
+    <div class="camsec-actions">
+      <button class="primary camsec-big" id="cam-start" type="button">Start camera</button>
+      <button class="camsec-big" id="cam-close" type="button" hidden>Close camera</button>
+    </div>
+    <p class="hint camsec-note" id="cam-status" aria-live="polite">Video never leaves your device: the detectors run inside this page. After the start they take from a few seconds to about half a minute to load.</p>
+    <div class="camsec-help" id="cam-help" role="status" hidden>
+      <p class="t" id="cam-help-title">The camera did not start here</p>
+      <p id="cam-help-text"></p>
+      <div class="camsec-actions" id="cam-save-row" hidden>
+        <button class="primary" id="cam-save" type="button">Save this page</button>
+      </div>
+      <p class="hint" id="cam-save-msg" aria-live="polite"></p>
+    </div>
+    <div class="camsec-frame" id="cam-host"></div>
+  </section>
+  <!--@@CAMERA_END@@-->
 </div>
 
 <script type="application/octet-stream" id="wasm-simd">@@WASM_SIMD@@</script>
 <script type="application/octet-stream" id="wasm-base">@@WASM_BASE@@</script>
 <script type="application/octet-stream" id="model-psnn">@@MODEL@@</script>
-<script>
+<script id="ps-js-fallback">
 window.PyroSightJS = function () {
 @@JS_FALLBACK@@
 return retasmFunc;
@@ -291,6 +345,7 @@ return retasmFunc;
 
   function restart() {
     ex.api_init(scenarioIdx, seed, parseFloat($("smoke").value), 1);
+    applyPalette(); ex.api_render();
     ex.api_set_detector(detector);
     trueTrail = []; estTrail = []; alerts = []; budget = 0; finished = false;
     var n = ex.api_n_inbound(), p = f32(ex.api_inbound(), 2 * n);
@@ -591,7 +646,14 @@ return retasmFunc;
     restart();
   });
   $("whereout").addEventListener("click", function () { ex.api_button(1); var st = f32(ex.api_state(), 33); for (;;) { var a = cstr(ex.api_next_alert()); if (!a) break; addAlert(st[S.T], a); } });
-  $("palette").addEventListener("click", function () { ex.api_button(2); ex.api_render(); draw(); });
+  // The page opens in the device's ironbow palette (thermal colours); the button
+  // cycles ironbow -> amber night -> white-hot, the device's three palettes.
+  var PALETTES = ["White-hot", "Ironbow", "Amber night"], palette = 1;
+  function applyPalette() {
+    ex.api_set_palette(palette);
+    $("palette").textContent = "Colours: " + PALETTES[palette];
+  }
+  $("palette").addEventListener("click", function () { palette = (palette + 1) % PALETTES.length; applyPalette(); ex.api_render(); draw(); });
   $("voice").addEventListener("click", function () {
     voiceOn = !voiceOn;
     this.textContent = voiceOn ? "Voice: on" : "Voice: off";
@@ -629,3 +691,326 @@ return retasmFunc;
   })();
 })();
 </script>
+<!--@@CAMERA_BEGIN@@-->
+<script id="ps-camsec-js">
+// "Try it on your own camera": the PyroSight Camera page (camera/dist/pyrosight_camera.html) is
+// stored at the end of this file as inert text (HTML comments in #ps-cam-store, see build_web.py),
+// so it costs nothing but parsing until "Start camera" is pressed. Then it is put in a frame
+// (srcdoc) with a small bridge script that starts its camera, reports its height and camera
+// state, and stops the camera when the frame is closed. The frame keeps the two pages' styles
+// and scripts apart. The simulator is paused while the frame is open (they share a thread).
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var sec = $("camera");
+  if (!sec) return;
+  var startBtn = $("cam-start"), closeBtn = $("cam-close"), host = $("cam-host"), statusEl = $("cam-status");
+  var help = $("cam-help"), helpTitle = $("cam-help-title"), helpText = $("cam-help-text");
+  var saveRow = $("cam-save-row"), saveBtn = $("cam-save"), saveMsg = $("cam-save-msg");
+  var IDLE = statusEl.textContent;
+  var cur = null;          // the open frame: {frame, token, ready, loaded, info, h, timer, pausedSim, wasRunning}
+  var helpKind = null;     // what the help box explains: null, "blocked", "other:<text>", "frame"
+  var downloads = null;    // claude.ai downloads capability (null when not available)
+  var lastStopped = null;  // track states the frame reported when it was closed (tests)
+
+  // ------------------------------------------------------------ the stored camera page
+  function cameraPageText() {
+    // stored in comments in #ps-cam-store, each piece after a ".", with "%" written as "%0" and "-" as "%1"
+    var box = $("ps-cam-store"), parts = [];
+    for (var n = box ? box.firstChild : null; n; n = n.nextSibling) if (n.nodeType === 8) parts.push(n.data.slice(1));
+    var s = parts.join("").replace(/%([01])/g, function (m, d) { return d === "0" ? "%" : "-"; });
+    if (!box || s.length !== parseInt(box.getAttribute("data-len"), 10)) throw new Error("The camera page is missing from this copy of the page.");
+    return s;
+  }
+
+  // Runs inside the frame (its source text is put into the camera page). Talks to this page only
+  // through postMessage, so it also works when the frame gets an origin of its own (sandboxed hosts).
+  function bridge(token, autostart) {
+    var P = window.parent;
+    if (!P || P === window) return;
+    function send(m) { m.psCam = token; try { P.postMessage(m, "*"); } catch (e) { /* page gone */ } }
+    function cam() { return window.PSCamera ? window.PSCamera.state : null; }
+    function height() {
+      var b = document.body, r = document.getElementById("ps-root");
+      var h = Math.max(b ? b.getBoundingClientRect().bottom : 0, r ? r.getBoundingClientRect().bottom : 0);
+      return Math.ceil(h + (window.scrollY || 0));
+    }
+    function info() {
+      var s = cam();
+      return { page: !!s, running: !!(s && s.src && s.src.kind === "camera"), kind: s && s.src ? s.src.kind : null,
+        pending: !!(s && s.camPending), error: (s && s.cameraError) || null, models: !!(s && s.modelsReady),
+        loadError: !!(s && s.loadError), h: height() };
+    }
+    var last = "";
+    function report() { var i = info(), k = JSON.stringify(i); if (k !== last) { last = k; send({ type: "state", info: i }); } }
+    function stopTracks() {
+      var out = [], seen = [];
+      function stopAll(ms) {
+        if (!ms || !ms.getTracks || seen.indexOf(ms) >= 0) return;
+        seen.push(ms);
+        ms.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { /* ignore */ } out.push(t.readyState); });
+      }
+      try { var s = cam(); if (s) stopAll(s.stream); } catch (e) { /* ignore */ }
+      try { Array.prototype.forEach.call(document.querySelectorAll("video"), function (v) { stopAll(v.srcObject); }); } catch (e) { /* ignore */ }
+      return out;
+    }
+    function start() {
+      var s = cam(), b = document.getElementById("start");
+      if (!s || !b || s.camPending || (s.src && s.src.kind === "camera")) return;
+      // iOS asks for the motion sensors only from a real tap: keep that question for the user's own
+      // tap on the camera page's Start button instead of spending it on this click
+      var D = window.DeviceOrientationEvent, rp = null;
+      try { if (D && typeof D.requestPermission === "function") { rp = D.requestPermission; D.requestPermission = undefined; } } catch (e) { rp = null; }
+      try { b.click(); } finally { try { if (rp) D.requestPermission = rp; } catch (e) { /* ignore */ } }
+    }
+    function theme(t) {
+      var de = document.documentElement;
+      if (t === "light" || t === "dark") de.setAttribute("data-theme", t); else de.removeAttribute("data-theme");
+    }
+    window.addEventListener("message", function (e) {
+      var d = e.data;
+      if (e.source !== P || !d || d.psCam !== token) return;
+      if (d.type === "start") start();
+      else if (d.type === "stop") send({ type: "stopped", tracks: stopTracks() });
+      else if (d.type === "theme") theme(d.theme);
+    });
+    if (window.ResizeObserver && document.body) new ResizeObserver(function () { report(); }).observe(document.body);
+    setInterval(report, 400);
+    send({ type: "ready", info: info() });
+    if (autostart) start();
+  }
+
+  // ------------------------------------------------------------ open / close
+  function randomToken() {
+    try { var a = new Uint32Array(4); crypto.getRandomValues(a); return Array.prototype.join.call(a, "-"); } catch (e) { return String(Math.random()).slice(2) + "-" + Date.now(); }
+  }
+  function post(c, m) { m.psCam = c.token; try { c.frame.contentWindow.postMessage(m, "*"); } catch (e) { /* frame gone */ } }
+  function sendTheme() { if (cur) post(cur, { type: "theme", theme: document.documentElement.getAttribute("data-theme") || "" }); }
+
+  // The simulator takes most of the page's main thread while it runs, which the camera page shares
+  // (same page, same thread): pause it while the camera is open and carry on afterwards.
+  function pauseSim() {
+    var p = $("play");
+    if (p && !p.disabled && p.textContent === "Pause") { p.click(); return true; }
+    return false;
+  }
+  function resumeSim() {
+    var p = $("play");
+    if (p && !p.disabled && p.textContent === "Play") p.click();
+  }
+  function simNote() { return cur && cur.pausedSim ? " The simulator above is paused while the camera is open." : ""; }
+  function setStatus(t) { statusEl.textContent = t; }
+
+  function open() {
+    if (cur || startBtn.disabled) return;
+    startBtn.disabled = true;
+    startBtn.textContent = "Opening…";
+    setStatus("Opening the camera page…");
+    // let that paint before the camera page (about 8 MB of text) is unpacked
+    var go = false, run = function () { if (!go) { go = true; openNow(); } };
+    requestAnimationFrame(function () { setTimeout(run, 0); });
+    setTimeout(run, 250);
+  }
+
+  function openNow() {
+    var html;
+    startBtn.disabled = false;
+    startBtn.textContent = "Start camera";
+    try { html = cameraPageText(); } catch (e) { showHelp("other:" + e.message); setStatus(IDLE); return; }
+    showHelp(null);
+    saveMsg.textContent = "";
+    var token = randomToken();
+    var tag = "<script>(" + bridge.toString() + ")(" + JSON.stringify(token) + ", true);</" + "script>\n";
+    var at = html.lastIndexOf("</html>");
+    html = at >= 0 && at > html.length - 64 ? html.slice(0, at) + tag + html.slice(at) : html + tag;
+    var f = document.createElement("iframe");
+    f.title = "PyroSight Camera";
+    f.setAttribute("allow", "camera *; microphone 'none'; accelerometer *; gyroscope *; magnetometer *; fullscreen *");
+    f.setAttribute("allowfullscreen", "");
+    f.style.height = Math.max(560, Math.round((window.innerHeight || 800) * 0.9)) + "px";
+    var c = cur = { frame: f, token: token, ready: false, loaded: false, info: null, h: 0, timer: 0, pausedSim: pauseSim(), wasRunning: false };
+    // no word from the camera page: it could not open here (for example a policy that blocks frames)
+    var check = function () { if (cur === c && !c.ready) frameFailed(); };
+    c.timer = setTimeout(check, 45000);
+    f.addEventListener("load", function () { if (cur === c) { c.loaded = true; clearTimeout(c.timer); c.timer = setTimeout(check, 3000); } });
+    f.srcdoc = html;
+    html = null;
+    host.appendChild(f);
+    startBtn.hidden = true;
+    closeBtn.hidden = false;
+    try { closeBtn.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    setStatus("Loading the camera page…" + simNote());
+    try { sec.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) { sec.scrollIntoView(); }
+  }
+
+  function close(keepHelp) {
+    if (!cur) return;
+    var c = cur;
+    cur = null;
+    clearTimeout(c.timer);
+    var w = c.frame.contentWindow, done = false;
+    // stop the camera now when the frame shares this page's origin; otherwise ask the bridge;
+    // removing the frame then ends whatever is left
+    try {
+      var s = w && w.PSCamera && w.PSCamera.state;
+      if (s && s.stream) s.stream.getTracks().forEach(function (t) { t.stop(); });
+    } catch (e) { /* frame with an origin of its own */ }
+    var fin = function () {
+      if (done) return;
+      done = true;
+      window.removeEventListener("message", ack);
+      if (c.frame.parentNode) c.frame.parentNode.removeChild(c.frame);
+    };
+    var ack = function (e) {
+      var d = e.data;
+      if (e.source === w && d && d.psCam === c.token && d.type === "stopped") { lastStopped = d.tracks; fin(); }
+    };
+    window.addEventListener("message", ack);
+    post(c, { type: "stop" });
+    c.frame.style.display = "none";
+    setTimeout(fin, 500);
+    var refocus = document.activeElement === closeBtn;
+    closeBtn.hidden = true;
+    startBtn.hidden = false;
+    if (refocus) try { startBtn.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    // the Save advice stays after closing; other help goes
+    showHelp(keepHelp || helpKind === "blocked" || helpKind === "frame" ? helpKind : null);
+    setStatus(IDLE);
+    if (c.pausedSim) resumeSim();
+  }
+
+  function frameFailed() {
+    close(true);
+    showHelp("frame");
+  }
+
+  // ------------------------------------------------------------ messages from the frame
+  window.addEventListener("message", function (e) {
+    var c = cur, d = e.data;
+    if (!c || e.source !== c.frame.contentWindow || !d || d.psCam !== c.token) return;
+    if (d.type === "ready") {
+      c.ready = true;
+      clearTimeout(c.timer);
+      sendTheme();
+      if (!c.pausedSim) c.pausedSim = pauseSim();   // the simulator may have started since the tap
+      if (d.info && !d.info.page) { frameFailed(); return; }
+    }
+    if (d.info) update(c, d.info);
+  });
+
+  var REASONS = {
+    NotFoundError: "No camera was found on this device.", DevicesNotFoundError: "No camera was found on this device.",
+    OverconstrainedError: "No camera was found on this device.",
+    NotReadableError: "The camera could not be started. Another app may be using it.", TrackStartError: "The camera could not be started. Another app may be using it.",
+    AbortError: "The camera could not be started. Another app may be using it.",
+    NoFrames: "The camera started but sent no picture.", Ended: "The camera was switched off or disconnected."
+  };
+  function update(c, i) {
+    c.info = i;
+    if (i.h > 0 && i.h !== c.h) { c.h = i.h; c.frame.style.height = i.h + "px"; }   // as tall as the camera page: no scrolling inside
+    if (i.running) {
+      c.wasRunning = true;
+      showHelp(null);
+      setStatus((i.loadError ? "Camera on, but the detectors could not load here (see below)."
+        : i.models ? "Camera on: point it at @@TARGETS@@."
+        : "Camera on. Loading the detectors: the first boxes appear in a few seconds, up to about half a minute on a slow device.") + simNote());
+    } else if (i.pending) {
+      setStatus("Waiting for the camera… If your browser asks, allow the camera." + simNote());
+    } else if (i.error) {
+      showHelp(REASONS[i.error] ? "other:" + REASONS[i.error] : "blocked");
+      setStatus("The camera did not start: see below." + simNote());
+    } else if (i.kind) {
+      setStatus("Analysing your " + (i.kind === "image" ? "photo" : "video") + "." + simNote());
+    } else if (c.wasRunning) {
+      setStatus("The camera is off. Press Start camera in the picture below to turn it on again." + simNote());
+    }
+  }
+
+  // ------------------------------------------------------------ help when the camera cannot start
+  var Q1 = "“", Q2 = "”";
+  function showHelp(kind) {
+    helpKind = kind;
+    if (!kind) { help.hidden = true; saveRow.hidden = true; return; }
+    var title, text, offerSave = !!downloads;
+    var file = cur ? " You can still try a photo or video: " + Q1 + "Open photo or video" + Q2 + " in the camera view below." : "";
+    if (kind === "blocked") {
+      title = "The camera is blocked here";
+      text = downloads
+        ? "This page is shown inside the Claude app, which does not let it use the camera. Save this page, open the saved pyrosight.html in Chrome, Safari or Edge, scroll to " + Q1 + "Try it on your own camera" + Q2 + ", press Start camera and allow the camera." + file
+        : "Your browser, or the app showing this page, did not let it use the camera. If your browser asked and the answer was no, allow the camera for this page in the browser" + "’" + "s site settings and press Start camera again. If this page is shown inside another app, open it directly in Chrome, Safari or Edge." + file;
+    } else if (kind === "frame") {
+      title = "The camera page could not open here";
+      text = downloads
+        ? "This viewer does not let this page open its camera view. Save this page, open the saved pyrosight.html in Chrome, Safari or Edge and press Start camera there."
+        : "This browser, or the app showing this page, did not let it open its camera view. Open this file directly in Chrome, Safari or Edge and press Start camera there.";
+    } else {
+      title = "The camera did not start";
+      text = kind.slice(6) + file;
+      offerSave = false;
+    }
+    helpTitle.textContent = title;
+    helpText.textContent = text;
+    saveRow.hidden = !offerSave;
+    help.hidden = false;
+  }
+
+  // ------------------------------------------------------------ save this page (claude.ai)
+  // The saved file is this whole page, byte for byte dist/pyrosight_sim.html: #ps-sim-shell lists
+  // its text with the big blocks given as element ids, filled in from those elements (their text,
+  // or for #ps-cam-store its markup: the comments).
+  function pageParts() {
+    var shell = JSON.parse($("ps-sim-shell").textContent), parts = [];
+    for (var i = 0; i < shell.length; i++) {
+      var p = shell[i];
+      if (typeof p === "string") { parts.push(p); continue; }
+      var el = $(p.ref || p.html);
+      if (!el) throw new Error("part " + (p.ref || p.html) + " is missing");
+      parts.push(p.html ? el.innerHTML : el.textContent);
+    }
+    return parts;
+  }
+  function savePage() {
+    if (!downloads) return;
+    var data, p;
+    try { data = new Blob(pageParts(), { type: "text/html" }); } catch (e) { saveMsg.textContent = "Could not prepare the file: " + ((e && e.message) || e); return; }
+    saveMsg.textContent = "";
+    try { p = downloads.save({ filename: "pyrosight.html", data: data }); } catch (e) { p = Promise.reject(e); }
+    Promise.resolve(p).then(function (r) {
+      saveMsg.textContent = r && r.status === "delivered" ? "" : "Saved as pyrosight.html. Open it from your downloads in Chrome, Safari or Edge, scroll to " + Q1 + "Try it on your own camera" + Q2 + ", press Start camera and allow the camera.";
+    }, function (e) {
+      var code = e && e.code;
+      if (code === "declined") return;
+      if (code === "rate_limited") saveMsg.textContent = "A save prompt is already open.";
+      else if (code === "too_large") saveMsg.textContent = "The page is too large to save here.";
+      else if (code === "bad_request" || code === "transform_error" || code === "rejected_extension" || code === "extension_not_enabled" || code === "request_unknown") saveMsg.textContent = "Saving did not work here (" + code + ").";
+      else { downloads = null; showHelp(helpKind); saveMsg.textContent = "Saving is not available here."; }
+    });
+  }
+  try {
+    if (window.claude && typeof window.claude.use === "function") {
+      Promise.resolve(window.claude.use("downloads")).then(function (d) { downloads = d || null; showHelp(helpKind); }, function () { downloads = null; showHelp(helpKind); });
+    }
+  } catch (e) { downloads = null; }
+
+  // ------------------------------------------------------------ controls
+  startBtn.addEventListener("click", open);
+  closeBtn.addEventListener("click", function () { close(false); });
+  saveBtn.addEventListener("click", savePage);
+  var jump = $("cam-jump");
+  if (jump) jump.addEventListener("click", function () {
+    try { sec.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) { sec.scrollIntoView(); }
+    try { startBtn.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+  });
+  if (window.MutationObserver) new MutationObserver(sendTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  // test / integration hook
+  window.PSCamSection = {
+    open: open, close: function () { close(false); }, pageParts: pageParts, cameraPageText: cameraPageText,
+    get frame() { return cur ? cur.frame : null; }, get info() { return cur ? cur.info : null; },
+    get ready() { return !!(cur && cur.ready); }, get helpKind() { return helpKind; },
+    get lastStopped() { return lastStopped; }, get downloads() { return !!downloads; }
+  };
+})();
+</script>
+@@CAMERA_PAGE@@
+<!--@@CAMERA_END@@-->

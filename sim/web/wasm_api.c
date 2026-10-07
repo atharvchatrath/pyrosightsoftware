@@ -67,6 +67,10 @@ API void api_set_detector(int d) { detector = d; }
 API void api_set_smoke(float s) { world.scene.smoke = s < 0 ? 0 : (s > 1 ? 1 : s); }
 API float api_get_smoke(void) { return world.scene.smoke; }
 API void api_button(int b) { if (ready) ps_system_on_button(&sys, (ps_button_t)b, world.t); }
+/* Display palette for the page (0 white-hot, 1 ironbow, 2 amber night); the
+ * device itself starts in white-hot and cycles with its palette button. */
+API void api_set_palette(int p) { if (p >= 0 && p < PS_PALETTE_COUNT) sys.disp.palette = (ps_palette_t)p; }
+API int api_get_palette(void) { return (int)sys.disp.palette; }
 
 static void run_detector(void)
 {
