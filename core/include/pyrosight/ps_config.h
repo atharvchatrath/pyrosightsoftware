@@ -52,7 +52,21 @@ typedef struct {
     float step_length_bias;     /* fractional 1-sigma systematic error (calibration,
                                    gait change when crouching in smoke) */
     float crawl_speed_mps;      /* assumed speed while moving without steps */
-    float missed_motion_sigma_m_per_s; /* growth while moving without steps (crawling) */
+    float missed_motion_sigma_m_per_s; /* legacy, unused: see crawl_speed_sigma */
+    float crawl_speed_sigma;    /* fractional 1-sigma error on the assumed crawl speed */
+    /* Crawl stride counting (ps_nav_on_linear_accel). */
+    float crawl_stride_m;       /* distance per hand-knee cycle, calibrated per wearer */
+    float crawl_stride_sigma;   /* fractional 1-sigma error on it */
+    float crawl_accel_min;      /* linear accel above which we call it motion */
+    float crawl_peak_margin;    /* how far an impact must stand above baseline */
+    float crawl_peak_ratio;     /* ...and by what factor, so steady walking cannot qualify */
+    uint32_t crawl_max_interval_ms; /* longest gap that still counts as a cadence */
+    uint32_t crawl_refractory_ms;/* minimum gap between counted cycles */
+    uint32_t crawl_after_step_ms;/* quiet period after a walking step */
+    uint32_t crawl_fallback_ms; /* no stride for this long -> assumed-speed model */
+    float imu_gap_sigma_m_per_s; /* displacement growth during an IMU outage */
+    float imu_coast_max_s;      /* stop extrapolating after this long without IMU */
+    uint32_t walk_idle_ms;      /* no steps for this long -> the wearer has stopped */
     float nav_conf_warn;        /* below: speak "Way out is ..." */
     float nav_conf_unreliable;  /* below: "follow hose" warning */
     float nav_conf_scale_m;     /* position sigma at which confidence is ~0.5 */

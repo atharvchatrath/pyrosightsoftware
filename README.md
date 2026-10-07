@@ -12,7 +12,7 @@ jack. Standalone: no WiFi, no Bluetooth, no internet.
 | Folder | What | Status |
 |---|---|---|
 | `core/` | All algorithms in portable C99: thermal pipeline, detection helpers, distance, navigation, alerts, display compositor, power policy, system integration | Done; 5 unit-test suites pass |
-| `firmware/` | ESP-IDF project for the ESP32-P4: Lepton VoSPI + CCI, BNO085 SH-2, ESP-DL detector, MIPI-DSI micro-OLED, ES8311 audio, buttons, battery | Written; protocol code passes 6 host test suites. **Not yet compiled against ESP-IDF or run on hardware** (see firmware/README.md "Known gaps") |
+| `firmware/` | ESP-IDF project for the ESP32-P4: Lepton VoSPI + CCI, BNO085 SH-2, ESP-DL detector, MIPI-DSI micro-OLED, ES8311 audio, buttons, battery | Builds for the ESP32-P4 against ESP-IDF v5.4.1 (CI, every push); protocol code passes 6 host test suites. **Never run on hardware** (see firmware/README.md "Known gaps") |
 | `ml/` | Synthetic thermal data, CenterNet-style detector, training, smoke-sliced evaluation, ONNX export, ESP-DL int8 `.espdl` export | Runs end to end; 110 tests pass. **Weights are trained on synthetic data only** |
 | `sim/` | Host simulator: ray-cast smoke-filled building, simulated BNO085, a simulated firefighter who searches and then walks out following only the arrow. `sim/web/` builds the same code into one HTML page that runs in a browser | Done |
 | `tools/` | Step/turn calibration per wearer, audio clip generator, partition flashing | Done |

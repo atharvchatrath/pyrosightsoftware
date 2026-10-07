@@ -1,5 +1,9 @@
 #include "sim_world.h"
 
+/* Simulated crawl gait: mean speed and distance per hand-knee cycle. */
+#define CRAWL_SPEED_MPS 0.35f
+#define CRAWL_STRIDE_M 0.45f
+
 #include <math.h>
 #include <string.h>
 
@@ -179,11 +183,28 @@ int sim_world_step(sim_world_t *w)
     float accel = 0.2f + 0.05f * sim_randn();
     if (want_walk && fabsf(err) < 25 * DEG) {
         if (crawling) {
-            float v = 0.35f * SIM_IMU_DT_MS / 1000.0f; /* crawl, no step events */
+            /*
+             * Crawling on hands and knees. The step detector does not fire
+             * (the BNO085 looks for a walking gait), but the motion is not
+             * smooth: each hand-knee cycle is an impact the accelerometer
+             * sees clearly. Modelling crawl as constant acceleration made the
+             * signal featureless and left the device nothing to measure but
+             * elapsed time, which is not what a real IMU gives you.
+             *
+             * ~0.78 cycles/s advancing ~0.45 m each = the same 0.35 m/s mean
+             * as before, so inbound travel is unchanged; what is new is the
+             * periodic structure a stride counter can lock onto.
+             */
+            float v = CRAWL_SPEED_MPS * SIM_IMU_DT_MS / 1000.0f;
             float nx = w->tx + v * cosf(w->tyaw), ny = w->ty + v * sinf(w->tyaw);
             sim_collide(&w->scene, w->tx, w->ty, &nx, &ny);
             w->tx = nx; w->ty = ny;
-            accel = 1.8f + 0.3f * sim_randn();
+            w->crawl_phase += (CRAWL_SPEED_MPS / CRAWL_STRIDE_M) * SIM_IMU_DT_MS / 1000.0f;
+            float impact = 0.0f;
+            if (w->crawl_phase >= 1.0f) { w->crawl_phase -= 1.0f; impact = 1.0f; }
+            /* The impact decays over the ~120 ms after the hand/knee lands. */
+            float tail = expf(-w->crawl_phase * CRAWL_STRIDE_M / CRAWL_SPEED_MPS / 0.12f);
+            accel = 1.1f + 2.6f * (impact > 0.0f ? 1.0f : tail) + 0.25f * sim_randn();
         } else {
             accel = 2.2f + 0.4f * sim_randn();
             w->step_phase += 1.6f * SIM_IMU_DT_MS / 1000.0f; /* 1.6 steps/s in smoke */

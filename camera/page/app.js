@@ -63,7 +63,7 @@
     stream: null, devices: [], facing: null, mirrorOverride: qs.get('mirror'),
     busy: false, results: null, lastPersons: null, cycle: 0, lastInferEnd: 0, lastInferVideoTime: -1,
     inferredSrc: null, inferError: null,
-    eyepiece: false, voice: false,
+    eyepiece: false, palette: 0, voice: false,
     mark: null, markLostSaid: false,
     exitSector: null, exitSectorSince: 0, lastExitSay: -1e9,
     al: {}, log: [], spoken: new Map(),
@@ -1223,9 +1223,45 @@
     for (let i = out.length - 1; i >= 0; i--) outlinedText(out[i][0], out[i][1], out[i][2], out[i][3], s);   // FIRE drawn last, on top
   }
 
+  /*
+   * The device's own three palettes, ported value for value from
+   * core/src/ps_display.c (build_luts). Showing an invented colour ramp here
+   * would misrepresent what the eyepiece looks like, which is the one thing
+   * this view exists to show.
+   *
+   * The data behind them is still camera brightness, not temperature — see
+   * drawEyepiece. A bright white shirt reads "hot" and a black radiator reads
+   * "cold"; that is the honest limit of doing this with an RGB camera, and
+   * the page says so on screen.
+   */
+  const EYE_PALETTES = (function () {
+    const iron = [[0, 0, 0], [80, 0, 140], [200, 30, 60], [250, 140, 0], [255, 255, 220]];
+    const whiteHot = new Uint8Array(256 * 3), ironLut = new Uint8Array(256 * 3), night = new Uint8Array(256 * 3);
+    for (let v = 0; v < 256; v++) {
+      whiteHot[v * 3] = whiteHot[v * 3 + 1] = whiteHot[v * 3 + 2] = v;
+      // Math.fround keeps the interpolation in float32, which is what the
+      // device computes in. In double precision six of the 256 ironbow entries
+      // land one level off (an exact boundary such as v=68 falling to 1.9999
+      // instead of 2.0), and the point of this view is to show the device's
+      // picture, not one that is nearly it.
+      const fr = Math.fround;
+      const t = fr(fr(v / 255) * 4), k = Math.min(3, Math.max(0, Math.floor(t))), f = fr(t - k);
+      for (let c = 0; c < 3; c++) ironLut[v * 3 + c] = fr(iron[k][c] + fr((iron[k + 1][c] - iron[k][c]) * f));
+      // Integer division, truncating, exactly as the C does: Math.round here
+      // put the amber ramp one level above the device's on 190 of 256 values.
+      const a = (v * 205 / 255) | 0;                       // amber at ~80% luminance
+      night[v * 3] = a; night[v * 3 + 1] = (a * 140 / 255) | 0; night[v * 3 + 2] = 0;
+    }
+    return [
+      { id: 'white', name: 'White-hot', lut: whiteHot },
+      { id: 'iron', name: 'Ironbow', lut: ironLut },
+      { id: 'night', name: 'Amber night', lut: night },
+    ];
+  })();
+
   function drawEyepiece(src, fit) {
-    // Grey "white-hot" look-alike: low resolution like the 160 x 120 thermal
-    // sensor, contrast stretched. It shows brightness, not heat.
+    // Low resolution like the 160 x 120 thermal sensor, contrast stretched,
+    // then through the device's palette. It shows brightness, not heat.
     const ew = 160, eh = Math.max(1, Math.round(160 * src.h / src.w));
     if (eye.width !== ew || eye.height !== eh) { eye.width = ew; eye.height = eh; eyeFrameKey = null; }
     const key = src.kind === 'image' ? src : state.lastVideoTime;
@@ -1248,7 +1284,8 @@
           let v = (Y[i] - eyeLo) / span;
           v = v < 0 ? 0 : v > 1 ? 1 : v;
           v = Math.round(255 * Math.pow(v, 1.15));
-          d[j] = d[j + 1] = d[j + 2] = v; d[j + 3] = 255;
+          const lut = EYE_PALETTES[state.palette % EYE_PALETTES.length].lut, o = v * 3;
+          d[j] = lut[o]; d[j + 1] = lut[o + 1]; d[j + 2] = lut[o + 2]; d[j + 3] = 255;
         }
         eyeCtx.putImageData(im, 0, 0);
       }
@@ -2203,8 +2240,24 @@
     stopSpeech();
     if (state.voice) { speech.q.push({ text: 'Voice on.', pri: 4, t: performance.now(), ttl: 4000 }); pumpSpeech(); }
   });
+  /*
+   * The palette button only exists while the eyepiece view is on: in the
+   * normal camera view there is nothing for it to change, and a dead control
+   * in front of a room full of firefighters is a question you have to stop
+   * and answer.
+   */
+  $('palette').addEventListener('click', function () {
+    state.palette = (state.palette + 1) % EYE_PALETTES.length;
+    this.textContent = 'Palette: ' + EYE_PALETTES[state.palette].name;
+    eyeFrameKey = null;                       // recolour the frame already on screen
+    draw(performance.now());
+  });
+
   $('eyepiece').addEventListener('click', function () {
     state.eyepiece = !state.eyepiece;
+    const pal = $('palette');
+    pal.hidden = !state.eyepiece;
+    pal.textContent = 'Palette: ' + EYE_PALETTES[state.palette].name;
     eyeFrameKey = null;
     this.textContent = state.eyepiece ? 'Eyepiece view: on' : 'Eyepiece view: off';
     this.setAttribute('aria-pressed', state.eyepiece ? 'true' : 'false');

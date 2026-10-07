@@ -244,6 +244,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
           <div class="row">
             <button id="voice" aria-pressed="false">Voice: off</button>
             <button id="eyepiece" aria-pressed="false">Eyepiece view: off</button>
+            <button id="palette" hidden>Palette: White-hot</button>
           </div>
           <div class="stack"><p class="hint" id="hint">Mark way out remembers where the camera points now; or tap the picture to mark that spot.</p><p class="hint off" aria-hidden="true" id="hint-size1"></p><p class="hint off" aria-hidden="true" id="hint-size2"></p></div>
         </div>
@@ -316,7 +317,7 @@ canvas.nav-map { width: 100%; height: min(70vw, 340px); display: block; border-r
       <section class="card about" aria-labelledby="ab-h">
         <div class="card-head"><h2 id="ab-h">About this view</h2></div>
         <p class="privacy">Video never leaves your device. Everything runs inside this page; nothing is uploaded, recorded or stored.</p>
-        <p>This uses an ordinary camera, which sees light. It cannot see through smoke or in the dark. The real PyroSight eyepiece uses a thermal camera that sees heat. Eyepiece view only imitates its grey picture; it is not thermal imaging.</p>
+        <p>This uses an ordinary camera, which sees light. It cannot see through smoke or in the dark. The real PyroSight eyepiece uses a thermal camera that sees heat. Eyepiece view imitates its picture &mdash; same low resolution, and the device&rsquo;s own three palettes (white-hot, ironbow, amber night) from <code>ps_display.c</code> &mdash; but it is colouring <strong>brightness, not temperature</strong>. A white shirt comes out &ldquo;hot&rdquo; and a cold radiator comes out dark. It is not thermal imaging and must not be read as one.</p>
         <p>Mark way out remembers a direction and follows it as you turn the camera, from how the picture moves and from the motion sensor on phones that report one. It does not know how far you have walked.</p>
         <p>Navigation (demo) runs the eyepiece’s own way-back-out code: it counts steps and turns from the entry, so its estimate drifts with every step, and its confidence drops as it does. A phone in your hand is not the device’s body-worn sensor, so expect larger errors. Demo walk is a simulation. While navigation runs, the green EXIT marker in the picture comes from it instead of from your mark.</p>
         <p>Distances are rough estimates from the size of a face or body and an assumed camera field of view of 65°.</p>

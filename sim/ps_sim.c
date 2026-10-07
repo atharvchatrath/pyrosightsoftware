@@ -136,7 +136,7 @@ int main(int argc, char **argv)
         mkdirs(p);
         snprintf(p, sizeof p, "%s/log.csv", out_dir);
         log = fopen(p, "w");
-        if (log) fprintf(log, "t_s,phase,true_x,true_y,true_yaw_deg,est_x,est_y,est_yaw_deg,pos_err_m,sigma_m,confidence,level,route_bearing_deg,route_dist_m,crumbs,dets\n");
+        if (log) fprintf(log, "t_s,phase,true_x,true_y,true_yaw_deg,est_x,est_y,est_yaw_deg,pos_err_m,sigma_m,confidence,level,route_bearing_deg,route_dist_m,crumbs,dets,sig_steps,sig_events,sig_cross,heading_sigma_deg,yaw_err_deg,untracked_s\n");
     }
     FILE *meta = NULL;
     if (dump_dir) {
@@ -257,9 +257,14 @@ int main(int argc, char **argv)
         if (log && t % 200 == 0) {
             ps_nav_guidance_t g;
             ps_nav_guidance(&sys.nav, &g);
-            fprintf(log, "%.2f,%d,%.3f,%.3f,%.1f,%.3f,%.3f,%.1f,%.3f,%.3f,%.3f,%d,%.1f,%.2f,%d,%d\n",
+            /* Heading error the device cannot see, for calibration work: the
+             * simulated world yaw minus what the device believes. */
+            float yaw_err = ps_wrap_pi(sys.nav.yaw - w->tyaw) / DEG;
+            fprintf(log, "%.2f,%d,%.3f,%.3f,%.1f,%.3f,%.3f,%.1f,%.3f,%.3f,%.3f,%d,%.1f,%.2f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%.1f\n",
                     ts, w->phase, w->tx - 0.3f, w->ty, w->tyaw / DEG, ex - 0.3f, ey, sys.nav.yaw / DEG, perr, g.pos_sigma_m,
-                    g.confidence, sys.alerts.level, g.route_bearing_rel_deg, g.route_dist_m, sys.nav.n_crumbs, sys.dets.n);
+                    g.confidence, sys.alerts.level, g.route_bearing_rel_deg, g.route_dist_m, sys.nav.n_crumbs, sys.dets.n,
+                    sqrtf(sys.nav.var_steps_m2), sqrtf(sys.nav.var_crawl_m2 + sys.nav.var_gap_m2), sys.nav.cross_sigma_m,
+                    sys.nav.heading_sigma_rad / DEG, yaw_err, sys.nav.untracked_s);
         }
     }
     if (log) fclose(log);
@@ -285,6 +290,8 @@ int main(int argc, char **argv)
     }
     o += snprintf(summary + o, sizeof summary - o, "person distance     mean abs error %.2f m, mean rel error %.0f%% (%d matches)\n",
                   dist_n ? dist_abs_err / dist_n : 0, dist_n ? 100 * dist_rel_err / dist_n : 0, dist_n);
+    o += snprintf(summary + o, sizeof summary - o, "crawl/gaps          %u crawl strides (%.1f m), %u IMU gaps (coasted %.1f m), fallback %.1f s\n",
+                  sys.nav.crawl_strides, sys.nav.crawl_dist_m, sys.nav.gaps, sys.nav.gap_coast_m, sys.nav.untracked_s);
     o += snprintf(summary + o, sizeof summary - o, "navigation          max position error %.2f m, lowest confidence %.2f, crumbs left %d\n",
                   max_pos_err, min_conf, sys.nav.n_crumbs);
     o += snprintf(summary + o, sizeof summary - o, "way out             %s; walk-out took %.1f s; ended %.2f m from the door\n",

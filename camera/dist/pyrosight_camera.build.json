@@ -28,9 +28,9 @@
  "pages": [
   {
    "file": "dist/pyrosight_camera.html",
-   "bytes": 8525622,
-   "mb": 8.526,
-   "sha256": "248155ffea4d31eec48bb5bf25f984c8ea859c8d2d108777239cd9a4a05d7455",
+   "bytes": 8535356,
+   "mb": 8.535,
+   "sha256": "299b48c2494b5231f1c3702cf5c2bdaf2049b3b56797242ffdc88e494db93c22",
    "title_ok": true,
    "parts": [
     "ps-app",
@@ -52,8 +52,8 @@
     "ps-firedoor": 5388,
     "ps-engine": 21866,
     "ps-motion": 31414,
-    "ps-app": 117325,
-    "ps-nav": 202398
+    "ps-app": 120171,
+    "ps-nav": 208477
    },
    "tfjs_http_strings": [
     "http://",
@@ -77,9 +77,9 @@
   },
   {
    "file": "dist/pyrosight_camera.fragment.html",
-   "bytes": 8525489,
-   "mb": 8.525,
-   "sha256": "3851640b33701837c812046d7df8eeb0c4d99ef85c694e5abc1cb99f003100eb",
+   "bytes": 8535223,
+   "mb": 8.535,
+   "sha256": "97786991e236ed96ef7c6c6f426fe27d6561d7967d66a385f370f4ede32461c5",
    "title_ok": true,
    "parts": [
     "ps-app",
@@ -101,8 +101,8 @@
     "ps-firedoor": 5388,
     "ps-engine": 21866,
     "ps-motion": 31414,
-    "ps-app": 117325,
-    "ps-nav": 202398
+    "ps-app": 120171,
+    "ps-nav": 208477
    },
    "tfjs_http_strings": [
     "http://",
@@ -127,11 +127,11 @@
  ],
  "page_build": {
   "files": {
-   "pyrosight_camera.html": 8525622,
-   "pyrosight_camera.fragment.html": 8525489
+   "pyrosight_camera.html": 8535356,
+   "pyrosight_camera.fragment.html": 8535223
   },
   "parts": {
-   "SHELL": 23936,
+   "SHELL": 24372,
    "TFJS": 1469867,
    "OPLIST": 18793,
    "PEOPLE": 26274,
@@ -139,8 +139,8 @@
    "FIREDOOR": 5388,
    "ENGINE": 21866,
    "MOTION": 31414,
-   "APP": 117134,
-   "NAV": 202394,
+   "APP": 119977,
+   "NAV": 208473,
    "FIREDOOR_MODEL": 1426170
   },
   "firedoor_included": true,

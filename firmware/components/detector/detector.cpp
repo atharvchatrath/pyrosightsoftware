@@ -93,10 +93,10 @@ void dequant(const Out &o, float *dst)
 {
     if (o.t->dtype == dl::DATA_TYPE_INT8)
         dq_dequant_i8_to_chw(static_cast<const int8_t *>(o.t->data), o.layout, kCh, DETECTOR_GRID_H,
-                             DETECTOR_GRID_W, o.t->exponent, dst);
+                             DETECTOR_GRID_W, o.t->exponent.get(), dst);
     else
         dq_dequant_i16_to_chw(static_cast<const int16_t *>(o.t->data), o.layout, kCh, DETECTOR_GRID_H,
-                              DETECTOR_GRID_W, o.t->exponent, dst);
+                              DETECTOR_GRID_W, o.t->exponent.get(), dst);
 }
 
 void unload()
@@ -152,11 +152,41 @@ extern "C" esp_err_t detector_init(const char *label)
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    S.st.input_exponent = S.input->exponent;
-    dq_build_input_lut(S.input->exponent, S.lut);
+    /*
+     * esp-dl 3.x made TensorBase::exponent an ExponentInfo object rather than
+     * an int, to carry per-channel quantisation. It still converts to int
+     * implicitly, and that conversion hands back the PER-TENSOR exponent —
+     * so a per-channel model would dequantise every channel with one scale
+     * and produce silent nonsense, with no compiler complaint anywhere.
+     *
+     * dq_dequant_* takes a single exponent, so a per-channel tensor is
+     * rejected here instead. Refusing to load leaves the classical threshold
+     * detector running (app_tasks.c), which is the documented fallback and
+     * infinitely better than confident garbage from the neural one.
+     */
+    const dl::TensorBase *quantised[] = { S.input, S.heat.t, S.wh.t, S.off.t };
+    static const char *const quantised_name[] = { "input", "heat", "wh", "off" };
+    for (size_t i = 0; i < sizeof quantised / sizeof *quantised; i++) {
+        if (!quantised[i]->exponent.is_valid()) {
+            ESP_LOGE(TAG, "%s: exponent info is invalid (allocation failed)", quantised_name[i]);
+            unload();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (quantised[i]->exponent.is_per_channel()) {
+            ESP_LOGE(TAG, "%s is per-channel quantised (%d channels); this build dequantises "
+                          "per-tensor only. Re-export with per-tensor quantisation.",
+                     quantised_name[i], quantised[i]->exponent.channel_size());
+            unload();
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    S.st.input_exponent = S.input->exponent.get();
+    dq_build_input_lut(S.input->exponent.get(), S.lut);
     S.st.loaded = true;
-    ESP_LOGI(TAG, "model loaded: input exponent %d, heat/wh/off exponents %d/%d/%d", S.input->exponent,
-             S.heat.t->exponent, S.wh.t->exponent, S.off.t->exponent);
+    ESP_LOGI(TAG, "model loaded: input exponent %d, heat/wh/off exponents %d/%d/%d",
+             S.input->exponent.get(), S.heat.t->exponent.get(), S.wh.t->exponent.get(),
+             S.off.t->exponent.get());
     return ESP_OK;
 }
 

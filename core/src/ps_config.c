@@ -35,7 +35,26 @@ void ps_config_default(ps_config_t *c)
     c->step_length_sigma = 0.10f;
     c->step_length_bias = 0.08f;
     c->crawl_speed_mps = 0.3f;
-    c->missed_motion_sigma_m_per_s = 0.15f;
+    c->missed_motion_sigma_m_per_s = 0.15f;  /* legacy */
+    /* How well the assumed crawl speed matches this wearer in this gear.
+     * Calibrated the same way as stride length (tools/calibrate_steps.py);
+     * 0.35 is a conservative default for an uncalibrated device. */
+    c->crawl_speed_sigma = 0.35f;
+    c->crawl_stride_m = 0.45f;       /* hands-and-knees cycle in full gear */
+    c->crawl_stride_sigma = 0.15f;
+    c->crawl_accel_min = 1.2f;
+    c->crawl_peak_margin = 0.9f;
+    c->crawl_peak_ratio = 1.55f;
+    c->crawl_max_interval_ms = 2500;  /* slower than this is not a crawl cadence */
+    c->crawl_refractory_ms = 450;
+    c->crawl_after_step_ms = 1500;
+    c->crawl_fallback_ms = 2500;
+    /* During an IMU outage the wearer could be moving at a brisk walk. Kept
+     * pessimistic on purpose, but bounded by walking speed rather than the
+     * old 1.5 m/s "could be anywhere" figure. */
+    c->imu_gap_sigma_m_per_s = 1.0f;
+    c->imu_coast_max_s = 6.0f;
+    c->walk_idle_ms = 2500;
     c->nav_conf_warn = 0.6f;
     c->nav_conf_unreliable = 0.3f;
     c->nav_conf_scale_m = 4.0f;

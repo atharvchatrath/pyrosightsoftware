@@ -151,6 +151,231 @@ static void test_heading_snap_cancels_drift(void)
     CHECK(with_snap < fabsf(nav.pos.y) * 0.6f);
 }
 
+
+/* ---------------------------------------------------------------- crawling */
+
+/* The hand-knee gait a crawling wearer puts into the accelerometer: an impact
+ * every stride, decaying over ~120 ms, on a low baseline. Same shape the
+ * simulator generates (sim/sim_world.c). */
+static void feed_crawl(ps_nav_t *n, const ps_config_t *c, uint32_t *clock,
+                       float seconds, float speed_mps, float stride_m)
+{
+    float phase = 0.0f;
+    int ticks = (int)(seconds * 100.0f);
+    for (int i = 0; i < ticks; i++) {
+        *clock += 10;
+        phase += (speed_mps / stride_m) * 0.01f;
+        float impact = 0.0f;
+        if (phase >= 1.0f) { phase -= 1.0f; impact = 1.0f; }
+        float tail = expf(-phase * stride_m / speed_mps / 0.12f);
+        float a = 1.1f + 2.6f * (impact > 0.0f ? 1.0f : tail) + 0.05f * ps_test_gauss();
+        ps_nav_on_yaw(n, c, 0.0f, *clock);
+        ps_nav_on_linear_accel(n, c, fabsf(a), *clock);
+        ps_nav_tick(n, c, *clock);
+    }
+}
+
+static void test_crawl_strides_measure_distance(void)
+{
+    /* The walking step detector is blind to crawling, so before this the
+     * device could only assume a speed and multiply by elapsed time. Counting
+     * hand-knee cycles measures the distance instead, which is what keeps the
+     * arrow usable on a route crawled in heavy smoke. */
+    ps_config_default(&cfg);
+    ps_nav_init(&nav);
+    now = 1000;
+    ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+    ps_nav_mark_entry(&nav, now);
+
+    const float speed = 0.35f, stride = 0.45f, secs = 40.0f;
+    feed_crawl(&nav, &cfg, &now, secs, speed, stride);
+
+    float truth = speed * secs;
+    printf("  crawled %.1f m, device measured %.2f m over %u strides\n",
+           truth, nav.pos.x, nav.crawl_strides);
+    CHECK(nav.crawl_strides > 25);
+    /* Within 15%: the assumed-speed model it replaces was 14% short on its
+     * own nominal, and got worse as soon as the wearer changed pace. */
+    CHECK(fabsf(nav.pos.x - truth) < 0.15f * truth);
+    CHECK(nav.confidence > 0.5f);
+}
+
+static void test_crawl_speed_change_is_tracked(void)
+{
+    /* Counting strides, not clock ticks: crawl slowly and the device must
+     * report less distance, where an assumed speed would report the same. */
+    ps_config_default(&cfg);
+    ps_nav_t fast_nav, slow_nav;
+    uint32_t t1 = 1000, t2 = 1000;
+
+    ps_nav_init(&fast_nav);
+    ps_nav_on_yaw(&fast_nav, &cfg, 0.0f, t1); ps_nav_mark_entry(&fast_nav, t1);
+    feed_crawl(&fast_nav, &cfg, &t1, 30.0f, 0.45f, 0.45f);
+
+    ps_nav_init(&slow_nav);
+    ps_nav_on_yaw(&slow_nav, &cfg, 0.0f, t2); ps_nav_mark_entry(&slow_nav, t2);
+    feed_crawl(&slow_nav, &cfg, &t2, 30.0f, 0.22f, 0.45f);
+
+    printf("  same 30 s: fast crawl %.2f m, slow crawl %.2f m\n", fast_nav.pos.x, slow_nav.pos.x);
+    CHECK(fast_nav.pos.x > slow_nav.pos.x * 1.5f);
+}
+
+static void test_isolated_impacts_are_not_crawling(void)
+{
+    /* A dropped tool, a bumped doorframe, or simply starting to walk after
+     * standing still all spike the accelerometer once. Crediting distance for
+     * a single spike invented 8.9 m on a route where nobody crawled, so a
+     * cadence has to be established first. */
+    ps_config_default(&cfg);
+    ps_nav_init(&nav);
+    now = 1000;
+    ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+    ps_nav_mark_entry(&nav, now);
+
+    for (int bump = 0; bump < 8; bump++) {
+        for (int i = 0; i < 400; i++) {          /* 4 s of near-stillness */
+            now += 10;
+            ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+            ps_nav_on_linear_accel(&nav, &cfg, 0.2f + 0.02f * ps_test_gauss(), now);
+            ps_nav_tick(&nav, &cfg, now);
+        }
+        for (int i = 0; i < 8; i++) {            /* one isolated 80 ms knock */
+            now += 10;
+            ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+            ps_nav_on_linear_accel(&nav, &cfg, 4.0f, now);
+            ps_nav_tick(&nav, &cfg, now);
+        }
+    }
+    printf("  8 isolated knocks produced %.2f m of phantom distance\n", nav.crawl_dist_m);
+    CHECK(nav.crawl_strides == 0);
+    CHECK(nav.crawl_dist_m < 0.5f);
+}
+
+/* ------------------------------------------------------------- IMU outages */
+
+static void test_coasts_through_imu_dropout(void)
+{
+    /* The sensor dies for three seconds while the wearer is walking. Freezing
+     * the position assumes they stopped dead the instant it failed, which is
+     * the one thing they certainly did not do. */
+    ps_config_default(&cfg);
+    ps_nav_init(&nav);
+    now = 1000;
+    ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+    ps_nav_mark_entry(&nav, now);
+
+    /* Walk 12 steps at 1.6 steps/s to establish a cadence. */
+    for (int i = 0; i < 12; i++) {
+        for (int k = 0; k < 62; k++) {
+            now += 10;
+            ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+            ps_nav_on_linear_accel(&nav, &cfg, 2.2f, now);
+            ps_nav_tick(&nav, &cfg, now);
+        }
+        ps_nav_on_step(&nav, &cfg, now);
+    }
+    float before = nav.pos.x;
+
+    /* Three seconds with no IMU at all: only the clock still runs. */
+    for (int k = 0; k < 300; k++) { now += 10; ps_nav_tick(&nav, &cfg, now); }
+
+    float coasted = nav.pos.x - before;
+    float truth = 0.62f * 1.6f * 3.0f;   /* stride * cadence * seconds */
+    printf("  3 s outage: coasted %.2f m, wearer really covered ~%.2f m\n", coasted, truth);
+    CHECK(nav.state == PS_NAV_LOST);
+    CHECK(nav.gaps == 1);
+    CHECK(coasted > 0.5f * truth);
+    CHECK(coasted < 1.5f * truth);
+    /* Honest about it: coasting is a prediction, so uncertainty still grows. */
+    CHECK(nav.pos_sigma_m > 1.0f);
+}
+
+static void test_coasting_stops_when_the_wearer_had_stopped(void)
+{
+    /* If they were standing still when the sensor died, coasting must not
+     * walk them across the room. */
+    ps_config_default(&cfg);
+    ps_nav_init(&nav);
+    now = 1000;
+    ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+    ps_nav_mark_entry(&nav, now);
+    for (int i = 0; i < 6; i++) {
+        for (int k = 0; k < 62; k++) { now += 10; ps_nav_on_yaw(&nav, &cfg, 0.0f, now); ps_nav_tick(&nav, &cfg, now); }
+        ps_nav_on_step(&nav, &cfg, now);
+    }
+    /* Five seconds standing still, then the IMU dies. */
+    for (int k = 0; k < 500; k++) {
+        now += 10;
+        ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+        ps_nav_on_linear_accel(&nav, &cfg, 0.2f, now);
+        ps_nav_tick(&nav, &cfg, now);
+    }
+    float before = nav.pos.x;
+    for (int k = 0; k < 300; k++) { now += 10; ps_nav_tick(&nav, &cfg, now); }
+    printf("  stationary outage coasted %.2f m\n", nav.pos.x - before);
+    CHECK(fabsf(nav.pos.x - before) < 0.3f);
+}
+
+static void test_snap_restores_heading_confidence(void)
+{
+    /* The snap is an observation, not just a correction: walking straight
+     * along a building axis bounds the heading error, so the uncertainty has
+     * to come back down. Left growing, it reached 35 degrees on the long
+     * route while the real error stayed near 2, and the device disowned a
+     * position estimate that was good to a metre. */
+    ps_config_default(&cfg);
+    ps_nav_init(&nav);
+    now = 1000;
+    ps_nav_on_yaw(&nav, &cfg, 0.0f, now);
+    ps_nav_mark_entry(&nav, now);
+
+    /* Six legs with 90-degree turns between them, gyro drifting throughout:
+     * turns and time are both sources of heading uncertainty, and a long
+     * search is made of them. */
+    float yaw = 0.0f, drift = 0.0f;
+    for (int leg = 0; leg < 16; leg++) {
+        for (int i = 0; i < 25; i++) {
+            for (int k = 0; k < 62; k++) {
+                now += 10; drift += 0.00002f;
+                ps_nav_on_yaw(&nav, &cfg, yaw + drift, now);
+                ps_nav_tick(&nav, &cfg, now);
+            }
+            ps_nav_on_step(&nav, &cfg, now);
+        }
+        for (int k = 0; k < 100; k++) {      /* turn 90 degrees over 1 s */
+            now += 10; yaw += (PI / 2) / 100.0f;
+            ps_nav_on_yaw(&nav, &cfg, yaw + drift, now);
+            ps_nav_tick(&nav, &cfg, now);
+        }
+    }
+    float snapped = nav.heading_sigma_rad;
+
+    cfg.heading_snap = false;
+    ps_nav_t alt; ps_nav_init(&alt);
+    now = 1000; yaw = 0.0f; drift = 0.0f;
+    ps_nav_on_yaw(&alt, &cfg, 0.0f, now);
+    ps_nav_mark_entry(&alt, now);
+    for (int leg = 0; leg < 16; leg++) {
+        for (int i = 0; i < 25; i++) {
+            for (int k = 0; k < 62; k++) {
+                now += 10; drift += 0.00002f;
+                ps_nav_on_yaw(&alt, &cfg, yaw + drift, now);
+                ps_nav_tick(&alt, &cfg, now);
+            }
+            ps_nav_on_step(&alt, &cfg, now);
+        }
+        for (int k = 0; k < 100; k++) {
+            now += 10; yaw += (PI / 2) / 100.0f;
+            ps_nav_on_yaw(&alt, &cfg, yaw + drift, now);
+            ps_nav_tick(&alt, &cfg, now);
+        }
+    }
+    printf("  heading sigma after a 16-leg search: %.1f deg with snap, %.1f without\n",
+           snapped * 180.0f / PI, alt.heading_sigma_rad * 180.0f / PI);
+    CHECK(snapped < alt.heading_sigma_rad * 0.7f);
+    CHECK(nav.confidence > alt.confidence);
+}
+
 int main(void)
 {
     RUN(test_quat_yaw);
@@ -158,5 +383,11 @@ int main(void)
     RUN(test_confidence_decays_and_imu_loss);
     RUN(test_crawling_lowers_confidence);
     RUN(test_heading_snap_cancels_drift);
+    RUN(test_snap_restores_heading_confidence);
+    RUN(test_crawl_strides_measure_distance);
+    RUN(test_crawl_speed_change_is_tracked);
+    RUN(test_isolated_impacts_are_not_crawling);
+    RUN(test_coasts_through_imu_dropout);
+    RUN(test_coasting_stops_when_the_wearer_had_stopped);
     TEST_MAIN_END();
 }
