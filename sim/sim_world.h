@@ -57,6 +57,7 @@ typedef struct {
     float gyro_err, yaw_world_offset;
     int phase, leg, lap;
     float step_phase, scan_turned, slide_yaw;
+    float crawl_phase;       /* hand-knee cycle, 0..1 */
     int slide_steps;
     uint32_t t, next_frame, frame_id, t_out_start;
     bool hose_used, exited, done, cam_down;

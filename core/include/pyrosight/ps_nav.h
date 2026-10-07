@@ -76,9 +76,40 @@ typedef struct {
 
     /* Uncertainty model (1-sigma, metres / radians). */
     float var_steps_m2;     /* independent per-step stride errors */
-    float var_events_m2;    /* displacement we could not measure: crawling, IMU loss */
+    /*
+     * Unmeasured displacement, split by whether retracing cancels it.
+     *
+     *   var_crawl_m2 — crawling at an assumed speed. This is a speed-scale
+     *     error of one wearer in one set of gear: it applies the same way on
+     *     the route back, so most of it cancels on the retrace, exactly like
+     *     the stride-length bias. Scaled by the remaining fraction of route.
+     *   var_gap_m2 — displacement during an IMU outage. Nothing cancels this:
+     *     it is a jump of unknown direction that the trail does not share.
+     *
+     * Lumping the two together is what made a 45 s crawl look as dangerous as
+     * teleporting: the crawl term alone reached 6.8 m of sigma while the true
+     * position error was 2.9 m, and the device sent the wearer to the hose.
+     */
+    float var_crawl_m2;
+    float var_gap_m2;
+    float crawl_dist_m;     /* total distance advanced without step events */
+
+    /* Speed over the ground from recent step cadence, used to coast through
+     * an IMU outage instead of assuming the wearer stood still. */
+    float speed_mps;
+    uint32_t t_lost_ms;     /* when the current outage began */
+    uint32_t gaps;          /* IMU outages survived */
+    float gap_coast_m;      /* distance coasted through outages */
     float cross_sigma_m;    /* cross-track error over the remaining route (derived) */
     float accel_lp;         /* low-passed linear acceleration magnitude */
+    /* Crawl stride detection: a hand-knee cycle is an impact on the
+     * accelerometer even though the walking step detector ignores it. */
+    float accel_fast;       /* short-window average, for peak detection */
+    float accel_base;       /* slow baseline the peak stands above */
+    bool  crawl_armed;      /* fell back below the threshold since the last peak */
+    uint8_t crawl_lock;     /* consecutive impacts at a plausible crawl cadence */
+    uint32_t t_last_crawl_stride_ms;
+    uint32_t crawl_strides;
     float heading_sigma_rad;
     float untracked_s;      /* seconds of motion without steps */
     float pos_sigma_m;

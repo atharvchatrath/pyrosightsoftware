@@ -7,6 +7,11 @@
 #define DEG2RAD (PI_F / 180.0f)
 #define RAD2DEG (180.0f / PI_F)
 
+/* A snap observation bounds heading error to a fraction of the snap window:
+ * the error must have been inside the window for the snap to fire at all, and
+ * is on average well inside it. */
+#define PS_SNAP_SIGMA_FRAC 0.5f
+
 float ps_wrap_pi(float a)
 {
     while (a > PI_F) a -= 2.0f * PI_F;
@@ -165,6 +170,26 @@ void ps_nav_on_step(ps_nav_t *nav, const ps_config_t *cfg, uint32_t t_ms)
             if (fabsf(err) * RAD2DEG < cfg->heading_snap_deg) {
                 nav->yaw_offset += err * cfg->heading_snap_gain;
                 nav->yaw = ps_wrap_pi(nav->yaw_raw + nav->yaw_offset);
+                /*
+                 * The snap is not only a correction, it is an OBSERVATION.
+                 * Walking straight along a corridor that lines up with a
+                 * building axis bounds the heading error to the snap window:
+                 * had the error been larger, the heading would have fallen
+                 * outside the window and no snap would have happened.
+                 *
+                 * Without this the uncertainty grew forever while the actual
+                 * heading error stayed near 2 degrees — on the long route
+                 * heading sigma reached 35 degrees, the cross-track term
+                 * dominated the budget, and the device disowned a position
+                 * estimate that was good to a metre. Confidence has to fall
+                 * when the heading is unobserved and recover when it is
+                 * observed, or it is not a measure of anything.
+                 */
+                const float bound = cfg->heading_snap_deg * DEG2RAD * PS_SNAP_SIGMA_FRAC;
+                if (nav->heading_sigma_rad > bound) {
+                    nav->heading_sigma_rad = bound +
+                        (nav->heading_sigma_rad - bound) * (1.0f - cfg->heading_snap_gain);
+                }
             }
         }
     }
@@ -173,6 +198,17 @@ void ps_nav_on_step(ps_nav_t *nav, const ps_config_t *cfg, uint32_t t_ms)
     nav->pos.y += L * sinf(nav->yaw);
     nav->dist_walked_m += L;
     nav->steps++;
+    /* Speed over the ground from the cadence, so an IMU outage can be coasted
+     * through rather than treated as the wearer standing still. */
+    if (nav->t_last_step_ms && t_ms > nav->t_last_step_ms) {
+        float gap_s = (float)(t_ms - nav->t_last_step_ms) * 0.001f;
+        if (gap_s > 0.15f && gap_s < 3.0f) {
+            float v = L / gap_s;
+            nav->speed_mps = nav->speed_mps > 0.0f ? nav->speed_mps + 0.3f * (v - nav->speed_mps) : v;
+        } else if (gap_s >= 3.0f) {
+            nav->speed_mps = 0.0f;   /* they had stopped */
+        }
+    }
     nav->t_last_step_ms = t_ms;
 
     const float sl = cfg->step_length_sigma * L;
@@ -186,31 +222,152 @@ void ps_nav_on_step(ps_nav_t *nav, const ps_config_t *cfg, uint32_t t_ms)
 
 void ps_nav_on_linear_accel(ps_nav_t *nav, const ps_config_t *cfg, float mag, uint32_t t_ms)
 {
-    (void)cfg;
     nav->t_last_imu_ms = t_ms;
     nav->accel_lp += 0.1f * (mag - nav->accel_lp);
+
+    /*
+     * Count crawl strides.
+     *
+     * Crawling is the standard posture in heavy smoke and the walking step
+     * detector is blind to it, so the device used to fall back on "assume
+     * 0.3 m/s and hope". That turns every variation in how fast somebody
+     * crawls into position error, and it has no way of noticing when they
+     * stop. Each hand-knee cycle is an impact the accelerometer sees plainly;
+     * counting those measures the distance instead of assuming it, and the
+     * stride length is a per-wearer calibration exactly like walking stride.
+     *
+     * Two time constants: a fast average to carry the impact, a slow baseline
+     * it has to stand above. The armed flag enforces one count per cycle.
+     */
+    nav->accel_fast += 0.35f * (mag - nav->accel_fast);
+    nav->accel_base += 0.01f * (mag - nav->accel_base);
+
+    /*
+     * Re-arm on the quiet half of the cycle, whatever the regime. Gating the
+     * arming on "currently crawling" was circular: between impacts the
+     * smoothed magnitude dips below the motion threshold, so the detector was
+     * disarmed in exactly the window where it had to re-arm, and counted
+     * nothing at all.
+     */
+    /*
+     * A crawl impact must clear its own baseline both by an absolute margin
+     * and by a FACTOR. The absolute margin alone let steady walking qualify:
+     * on the long route, strides missed by the walking detector left gaps
+     * that looked like crawling, and noise excursions were counted as hand
+     * placements — 12 phantom strides, 8.9 m of invented distance on a route
+     * where nobody ever went to their knees. Walking acceleration is steady,
+     * so it fails the ratio test however long the gap between counted steps.
+     */
+    float thresh = nav->accel_base + cfg->crawl_peak_margin;
+    float ratio_thresh = nav->accel_base * cfg->crawl_peak_ratio;
+    if (ratio_thresh > thresh) thresh = ratio_thresh;
+    if (nav->accel_fast < thresh * 0.85f) nav->crawl_armed = true;
+
+    if (nav->state != PS_NAV_TRACKING) return;
+    /* The regime test uses the slow baseline, not the fast average: the gait
+     * makes the fast one dip every cycle, which is motion, not a pause. */
+    bool crawling = nav->accel_base > cfg->crawl_accel_min &&
+                    t_ms - nav->t_last_step_ms > cfg->crawl_after_step_ms;
+    if (!crawling) return;
+    if (!nav->crawl_armed || nav->accel_fast < thresh) return;
+    if (t_ms - nav->t_last_crawl_stride_ms < cfg->crawl_refractory_ms) return;
+
+    /*
+     * One impact is not a crawl. Dropping a tool, bumping a doorframe, or
+     * simply starting to walk after standing still all produce a single
+     * spike above a baseline that has not caught up yet — that last one was
+     * manufacturing 8.9 m of distance on a route where nobody crawled.
+     *
+     * Distance is credited only once a CADENCE is established: consecutive
+     * impacts spaced like a hand-knee cycle. The first impact of a genuine
+     * crawl is therefore not counted, which costs half a stride of lag and
+     * is the right trade against inventing motion that never happened.
+     */
+    uint32_t gap_ms = t_ms - nav->t_last_crawl_stride_ms;
+    bool in_cadence = nav->t_last_crawl_stride_ms != 0 && gap_ms <= cfg->crawl_max_interval_ms;
+    nav->crawl_armed = false;
+    nav->t_last_crawl_stride_ms = t_ms;
+    if (!in_cadence) { nav->crawl_lock = 1; return; }
+    if (nav->crawl_lock < 3) nav->crawl_lock++;
+    if (nav->crawl_lock < 2) return;
+    nav->crawl_strides++;
+
+    const float L = cfg->crawl_stride_m;
+    nav->pos.x += L * cosf(nav->yaw);
+    nav->pos.y += L * sinf(nav->yaw);
+    nav->dist_walked_m += L;
+    nav->crawl_dist_m += L;
+    /* Same error model as a walking stride, with a wider tolerance: the
+     * crawl stride length is calibrated less often and varies more. */
+    float sd = sqrtf(nav->var_crawl_m2) + cfg->crawl_stride_sigma * L;
+    nav->var_crawl_m2 = sd * sd;
+
+    float since = nav->n_crumbs ? dist2(nav->pos, nav->crumbs[nav->n_crumbs - 1].p) : 0.0f;
+    prune_loops(nav, cfg);
+    if (since >= cfg->breadcrumb_spacing_m) add_crumb(nav, cfg, t_ms);
+    update_return_target(nav, cfg);
 }
 
 void ps_nav_tick(ps_nav_t *nav, const ps_config_t *cfg, uint32_t t_ms)
 {
     if (nav->state == PS_NAV_IDLE) { nav->t_last_ms = t_ms; return; }
+    /* Cadence lost: the next impact starts a new lock rather than extending
+     * the old one. */
+    if (nav->crawl_lock && t_ms - nav->t_last_crawl_stride_ms > cfg->crawl_max_interval_ms)
+        nav->crawl_lock = 0;
     float dt = (float)(t_ms - nav->t_last_ms) * 0.001f;
     nav->t_last_ms = t_ms;
     if (dt <= 0.0f) return;
 
-    if (t_ms - nav->t_last_imu_ms > cfg->imu_timeout_ms) nav->state = PS_NAV_LOST;
+    if (t_ms - nav->t_last_imu_ms > cfg->imu_timeout_ms) {
+        if (nav->state != PS_NAV_LOST) { nav->state = PS_NAV_LOST; nav->t_lost_ms = t_ms; nav->gaps++; }
+    }
 
     /* Heading drift accumulates with time. */
     nav->heading_sigma_rad += cfg->gyro_drift_deg_per_min * DEG2RAD * dt / 60.0f;
 
+    /*
+     * Forget the walking speed once the steps stop. Without this the last
+     * speed measured stayed on the books indefinitely, so an IMU outage that
+     * began while the wearer was standing still coasted them 2.7 m across the
+     * room — inventing exactly the kind of motion coasting exists to avoid
+     * inventing. Only the step detector may set this; only the clock clears it.
+     */
+    if (nav->state == PS_NAV_TRACKING && nav->speed_mps > 0.0f &&
+        t_ms - nav->t_last_step_ms > cfg->walk_idle_ms &&
+        t_ms - nav->t_last_crawl_stride_ms > cfg->walk_idle_ms) {
+        nav->speed_mps = 0.0f;
+    }
+
     if (nav->state == PS_NAV_LOST) {
-        /* No IMU: they may have moved at a brisk walk in any direction. Kept
-         * deliberately pessimistic: in simulation a 4 s outage that went
-         * unmeasured made the wearer miss a doorway while the arrow was still
-         * shown, so an outage of a few seconds should end in "follow hose". */
-        float sd = sqrtf(nav->var_events_m2) + 1.5f * dt;
-        nav->var_events_m2 = sd * sd;
-    } else if (nav->accel_lp > 1.2f && t_ms - nav->t_last_step_ms > 1500) {
+        /*
+         * No IMU. Freezing the position here assumes the wearer stopped the
+         * instant the sensor died, which is the one thing they certainly did
+         * not do: they were walking, and they keep walking. Coast instead —
+         * carry on at the speed and heading measured just before the loss.
+         *
+         * The estimate is a prediction, so the uncertainty still grows at the
+         * full rate; but the mean is far better than a stop. Coasting is
+         * capped, because after a few seconds "they kept going straight" is a
+         * guess rather than an extrapolation.
+         */
+        float coast_s = (float)(t_ms - nav->t_lost_ms) * 0.001f;
+        if (nav->speed_mps > 0.0f && coast_s <= cfg->imu_coast_max_s) {
+            float v = nav->speed_mps * dt;
+            nav->pos.x += v * cosf(nav->yaw);
+            nav->pos.y += v * sinf(nav->yaw);
+            nav->dist_walked_m += v;
+            nav->gap_coast_m += v;
+        }
+        float sd = sqrtf(nav->var_gap_m2) + cfg->imu_gap_sigma_m_per_s * dt;
+        nav->var_gap_m2 = sd * sd;
+    } else if (nav->accel_base > cfg->crawl_accel_min &&
+               t_ms - nav->t_last_step_ms > cfg->crawl_after_step_ms &&
+               t_ms - nav->t_last_crawl_stride_ms > cfg->crawl_fallback_ms) {
+        /* Moving, step detector quiet, and no crawl stride counted recently:
+         * the gait is not readable (dragging a casualty, climbing, squeezing
+         * through a gap). Fall back to the old assumed-speed model, which is
+         * worse but never silently stops tracking. */
         /* Moving without counted steps: crawling (the standard posture in
          * heavy smoke), dragging a casualty, climbing. Advance at a nominal
          * crawl speed along the heading, and grow the uncertainty with the
@@ -220,8 +377,21 @@ void ps_nav_tick(ps_nav_t *nav, const ps_config_t *cfg, uint32_t t_ms)
         nav->pos.x += v * cosf(nav->yaw);
         nav->pos.y += v * sinf(nav->yaw);
         nav->dist_walked_m += v;
-        float sd = sqrtf(nav->var_events_m2) + cfg->missed_motion_sigma_m_per_s * dt;
-        nav->var_events_m2 = sd * sd;
+        nav->crawl_dist_m += v;
+        /*
+         * This is the fallback: motion we can see but cannot measure, so the
+         * displacement is a guess at a speed, not a count of strides.
+         *
+         * It goes in the GAP term, which does not cancel on the retrace.
+         * Counted crawl strides do cancel — they share one stride-length
+         * scale factor with the trail, exactly like walking — but shuffling
+         * sideways along a wall shares nothing with the way back. Treating
+         * the two alike made the device over-trust itself on routes where
+         * nobody ever crawled, and the near-misses at the door went from one
+         * to three.
+         */
+        float sd = sqrtf(nav->var_gap_m2) + cfg->crawl_speed_sigma * v;
+        nav->var_gap_m2 = sd * sd;
         float since = nav->n_crumbs ? dist2(nav->pos, nav->crumbs[nav->n_crumbs - 1].p) : 0.0f;
         prune_loops(nav, cfg);
         if (since >= cfg->breadcrumb_spacing_m) add_crumb(nav, cfg, t_ms);
@@ -253,7 +423,8 @@ void ps_nav_tick(ps_nav_t *nav, const ps_config_t *cfg, uint32_t t_ms)
     nav->cross_sigma_m = cross;
     const float frac = nav->dist_walked_m > 0.0f ? fminf(1.0f, remaining / nav->dist_walked_m) : 0.0f;
     const float bias = cfg->step_length_bias * remaining;
-    float sigma = sqrtf(nav->var_steps_m2 * frac + nav->var_events_m2 + bias * bias + cross * cross);
+    float sigma = sqrtf(nav->var_steps_m2 * frac + nav->var_crawl_m2 * frac + nav->var_gap_m2 +
+                        bias * bias + cross * cross);
     nav->pos_sigma_m = sigma;
     float r = sigma / cfg->nav_conf_scale_m;
     nav->confidence = 1.0f / (1.0f + r * r);
